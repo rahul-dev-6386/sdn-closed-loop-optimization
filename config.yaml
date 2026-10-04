@@ -1,0 +1,232 @@
+# =============================================================================
+# AI-Driven SDN Traffic Optimization and Congestion Avoidance
+# Central configuration. NO magic numbers in code -- every tunable lives here.
+# =============================================================================
+
+experiment:
+  # Global seed. Per-experiment seeds are derived deterministically from this
+  # seed plus the experiment index so that all repetitions are reproducible.
+  seed: 42
+  results_dir: results
+  data_dir: data
+  log_dir: data/logs
+
+# -----------------------------------------------------------------------------
+# Topology (P2). Diamond / multipath: S1 - S2 - S4 and S1 - S3 - S4
+# H1 attaches to S1, H4 attaches to S4.
+# -----------------------------------------------------------------------------
+topology:
+  name: diamond
+  # TCLink shaping parameters for inter-switch links.
+  link_bw_mbps: 10.0          # 10 Mbps per inter-switch link (target for P2 test)
+  link_delay_ms: 5.0          # ONE-WAY propagation delay added per link
+  link_max_queue_size: 100    # netem `limit` in packets (queue depth) per link
+  host_bw_mbps: 100.0         # host<->switch links are lightly shaped
+  host_delay_ms: 1.0          # ONE-WAY delay on host links
+  host_max_queue_size: 100    # netem `limit` in packets on host links
+  # Loss-free baseline: Mininet's default netem is 0 loss. Do not set loss_ms here.
+  # Optionally an extra "congestible" shaping to apply during congestion episodes.
+  congestion_loss_pct: 0.0
+  # Per-link overrides are supported in `links` below, e.g.
+  #   - {a: s1, b: s3, bw_mbps: 4.0, delay_ms: 20.0, max_queue_size: 20}
+  # Anything omitted falls back to the link_* / host_* defaults above.
+
+  datapath_type: kernel       # kernel | netdev  (netdev = userspace fallback)
+
+  hosts:
+    - name: h1
+      ip: "10.0.0.1/24"
+      switch: s1
+    - name: h4
+      ip: "10.0.0.4/24"
+      switch: s4
+  switches:
+    # `ports` must cover every incident link plus attached hosts (validated).
+    - {name: s1, ports: 4}     # s1-s2, s1-s3, h1
+    - {name: s2, ports: 2}     # s1-s2, s2-s4
+    - {name: s3, ports: 2}     # s1-s3, s3-s4
+    - {name: s4, ports: 4}     # s2-s4, s3-s4, h4
+  links:
+    - [s1, s2]
+    - [s1, s3]
+    - [s2, s4]
+    - [s3, s4]
+
+# -----------------------------------------------------------------------------
+# Controller (P3). OpenFlow 1.3, ARP proxy, loop-free forwarding.
+# -----------------------------------------------------------------------------
+controller:
+  ofp_tcp_listen_host: 127.0.0.1
+  ofp_tcp_listen_port: 6653
+  # Hard safety: if ARP proxy is disabled we MUST flood only on a spanning tree.
+  enable_arp_proxy: true
+  # Idle/hard timeouts (seconds) for installed flow entries.
+  flow_idle_timeout: 30
+  flow_hard_timeout: 0        # 0 = no hard timeout
+  # Priority scheme for forwarding rules.
+  priority_default: 100
+  priority_baseline: 200      # safe baseline route (rule 7)
+  priority_selected: 1000     # currently selected per-flow path
+  # Emit a packet-in for ARP and IPv4 only (drop LLDP/SNMP noise from OVS).
+  packet_in_protocols: ["arp", "ipv4", "ipv6"]
+  # The controller's own IP for ARP requests aimed at it (P3 rarely needs it,
+  # but P9 reuses the proxy). 0.0.0.0 disables self-answering.
+  own_ip: "0.0.0.0"
+  # Switch/host port adjacency used for shortest-path forwarding. Written by
+  # `make portmap`; P4 replaces this side-channel with live LLDP/OFPPortDesc
+  # discovery so no file is needed at runtime.
+  port_map_path: data/portmap.json
+  # Identity the controller uses when it originates ARP itself (proactive MAC
+  # resolution). proxy_ip must be inside every host subnet.
+  proxy_mac: "0e:00:00:00:00:01"
+  proxy_ip: "10.0.0.254"
+
+# -----------------------------------------------------------------------------
+# Topology discovery (P4)
+# -----------------------------------------------------------------------------
+discovery:
+  poll_interval_s: 2.0
+  # k for k-shortest paths per source/destination pair.
+  k_shortest: 3
+  # Ignore these port pairs when building the graph (e.g. host<->switch links are
+  # capacity 100 Mbps by default; that is fine to keep -- they are simply cheaper).
+  exclude_local_ports: true
+
+# -----------------------------------------------------------------------------
+# Telemetry (P5). Rates from counter DIFFERENCES over the actual elapsed time.
+# -----------------------------------------------------------------------------
+telemetry:
+  sample_interval_s: 2.0      # configurable; default 2 s per the design rules
+  # If no sample arrives within this multiple of the interval, telemetry is
+  # considered STALLED and the controller falls back to shortest path (rule 7).
+  stall_timeout_multiple: 3.0
+  csv_path: data/telemetry.csv
+  # Normalisation references for the cost function (all features -> [0,1]).
+  norm:
+    bandwidth_mbps: 100.0     # reference for bandwidth-based utilisation
+    latency_ms: 50.0          # reference for latency normalisation
+    loss_pct: 5.0             # reference for loss normalisation
+  # Congestion threshold: a link is congested when utilisation exceeds this.
+  congestion_utilization_threshold: 0.80
+  # Loss threshold (percent) that also counts as congestion.
+  congestion_loss_threshold_pct: 2.0
+  # Latency threshold (ms) that also counts as congestion.
+  congestion_latency_threshold_ms: 40.0
+  probe:
+    # Active latency probe: ICMP every probe_interval_s to every other host.
+    enabled: true
+    probe_interval_s: 1.0
+    timeout_s: 0.5
+    # Rolling window (in samples) of latency/loss samples kept per host pair.
+    window: 30
+
+# -----------------------------------------------------------------------------
+# Machine learning (P6/P7/P8). Predicts FUTURE congestion per link.
+# -----------------------------------------------------------------------------
+ml:
+  model_path: results/model.joblib
+  features_path: results/feature_importance.png
+  metrics_path: results/ml_metrics.json
+  # Sampling grid the feature builder is aligned to (must equal sample_interval_s).
+  sample_interval_s: 2.0
+  # Sliding window: last W samples of telemetry per link.
+  window_w: 12               # 12 samples * 2 s = 24 s of history
+  # Label horizon: label = 1 if the link is congested at ANY point in the next
+  # N seconds. Must be strictly in the future relative to the feature window.
+  horizon_n_s: 20.0
+  # Guard band between the end of the feature window and the start of the label
+  # horizon. Prevents the boundary sample from leaking into the label.
+  label_gap_s: 2.0
+  models:
+    - logistic_regression
+    - random_forest
+  random_forest:
+    n_estimators: 300
+    max_depth: 12
+    min_samples_leaf: 5
+    n_jobs: -1
+    random_state: 42
+  logistic_regression:
+    C: 1.0
+    max_iter: 2000
+    class_weight: balanced
+  # Time-based split: the last `test_fraction` chronologically is the test set.
+  test_fraction: 0.3
+  # Inference guard: if inference for all links exceeds this, fall back.
+  max_inference_ms: 50.0
+  # Congestion probability above which a link is treated as "predicted congested".
+  decision_threshold: 0.5
+  # Lead-time is reported in seconds: how early the first correct alarm fired.
+
+# -----------------------------------------------------------------------------
+# Routing + rerouting (P9)
+# -----------------------------------------------------------------------------
+routing:
+  # One of: static_shortest | ecmp | reactive_threshold | ml_aware
+  mode: ml_aware
+  # link_cost = a*util_norm + b*latency_norm + c*loss_norm + d*p_congestion
+  weights:
+    a_utilization: 0.25
+    b_latency: 0.15
+    c_loss: 0.20
+    d_congestion: 0.40
+  # Reroute only if the alternative is at least this much cheaper.
+  # alt_cost < current_cost * improvement_ratio
+  improvement_ratio: 0.85
+  # Hysteresis: minimum seconds between two reroutes for the SAME flow.
+  cooldown_s: 10.0
+  # Hysteresis: minimum seconds a flow must stay on its current path.
+  min_dwell_s: 8.0
+  # Make-before-break: install new egress->ingress rules first, flip the
+  # ingress rule last, then delete old rules.
+  make_before_break: true
+  # Flow tracking / stats poll interval for the controller's rule 5 decisions.
+  decision_interval_s: 2.0
+
+# -----------------------------------------------------------------------------
+# Traffic generation (P6) and experiments (P10)
+# -----------------------------------------------------------------------------
+traffic:
+  patterns:
+    - ramp
+    - bursty_onoff
+    - poisson
+    - tcp_udp_mix
+    - elephant_mice
+  # Duration of a single traffic pattern episode (seconds).
+  episode_duration_s: 120
+  # Number of iperf3 client/server pairs used by the "elephant" flows.
+  elephant_flows: 1
+  mice_flows: 4
+  base_rate_mbps: 2.0
+  peak_rate_mbps: 12.0      # deliberately exceeds the 10 Mbps link -> congestion
+  ramp_step_s: 10
+  on_phase_s: 30
+  off_phase_s: 20
+  poisson_rate_hz: 20.0
+  poisson_burst_bytes: 65535
+  udp_ratio: 0.3
+
+experiments:
+  modes: [static_shortest, ecmp, reactive_threshold, ml_aware]
+  scenarios: [baseline, ramp_bursty, hot_sink]
+  repetitions: 10
+  output_csv: results/experiments.csv
+  # Metrics collected per run:
+  #   mean_latency_ms, p95_latency_ms, throughput_mbps, loss_pct,
+  #   utilization_balance (stddev across links), congestion_duration_s,
+  #   recovery_time_s, reroute_count
+
+# -----------------------------------------------------------------------------
+# Logging (rule 9): structured, timestamped CLI logs.
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO                # DEBUG | INFO | WARNING | ERROR
+  console: true
+  file: data/logs/sdn.log
+  # Machine-readable event stream (JSON lines) for the API/dashboard.
+  events_jsonl: data/logs/events.jsonl
+  # Per-module logger names to raise to DEBUG.
+  debug_modules: []
+  fmt: "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)-22s %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"

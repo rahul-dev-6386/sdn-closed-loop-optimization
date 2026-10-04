@@ -1,0 +1,28 @@
+# venv / build artefacts
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# generated data and results
+data/telemetry*.csv
+data/logs/
+results/*.joblib
+results/*.png
+results/*.csv
+results/*.json
+
+# dashboard
+dashboard/react-app/node_modules/
+dashboard/react-app/build/
+
+# misc
+.pytest_cache/
+.DS_Store
+# generated port map (rebuilt by `make portmap`, replaced by P4 discovery)
+data/portmap.json
+data/topology.json
+data/sdn.db*
+
+# secrets
+.env
