@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ryu.base import app_manager
@@ -46,6 +47,12 @@ from common.config import Config, load_config
 from common.logging_utils import get_event_log, setup_logging
 from controller.arp_proxy import ArpProxy, ArpTable, is_valid_mac
 from controller.flow_manager import FlowProgrammer, FlowSpec, table_miss_spec
+from controller.telemetry import (
+    PROBE_ETHERTYPE,
+    TelemetryCollector,
+    build_probe_packet,
+    parse_probe_packet,
+)
 from controller.topology import TopologyTracker, build_lldp_packet, parse_lldp_packet
 
 LOGGER = logging.getLogger("controller.sdn")
@@ -164,6 +171,22 @@ class SdnController(app_manager.RyuApp):
         }
         self.discovery_enabled = bool(self.config.get("discovery.enabled", True))
         self.discovery_thread = hub.spawn(self._discovery_loop) if self.discovery_enabled else None
+
+        self.telemetry = TelemetryCollector(self.config)
+        for link in self.topology.links.values():
+            self.telemetry.register_link(
+                link.src_switch, link.src_port, link.dst_switch, link.dst_port, link.bw_mbps, link.delay_ms
+            )
+            self.telemetry.register_link(
+                link.dst_switch, link.dst_port, link.src_switch, link.src_port, link.bw_mbps, link.delay_ms
+            )
+        self.telemetry_enabled = bool(self.config.get("telemetry.enabled", True))
+        self.telemetry_thread = hub.spawn(self._telemetry_loop) if self.telemetry_enabled else None
+        self.probe_thread = (
+            hub.spawn(self._probe_loop)
+            if self.telemetry_enabled and bool(self.config.get("telemetry.probe.enabled", True))
+            else None
+        )
 
     def _switch_name(self, datapath: Any) -> str:
         """Return the Mininet switch name for a datapath.
@@ -330,6 +353,18 @@ class SdnController(app_manager.RyuApp):
             # Only the table-miss rule is installed up front; forwarding is
             # learned from packet-ins.
             self.flows.install(table_miss_spec(switch))
+            # Probe packets (ethertype 0x88b5) must always go straight to the controller
+            # with zero buffering, bypassing normal learning/forwarding flows.
+            self.flows.install(
+                FlowSpec(
+                    switch=switch,
+                    priority=65000,
+                    match={"eth_type": PROBE_ETHERTYPE},
+                    out_port=None,
+                    idle_timeout=0,
+                    hard_timeout=0,
+                )
+            )
             warnings = []
             if self.port_map is not None:
                 from controller.portmap import datapath_port_sets
@@ -401,6 +436,8 @@ class SdnController(app_manager.RyuApp):
             self._handle_ipv4(datapath, msg, pkt, eth)
         elif eth.ethertype == ether_types.ETH_TYPE_LLDP:
             self._handle_lldp(datapath, msg, pkt, eth)
+        elif eth.ethertype == PROBE_ETHERTYPE:
+            self._handle_probe(datapath, msg, pkt, eth)
         else:
             LOGGER.info(
                 "%s: ethertype 0x%04x not in %s -> dropped",
@@ -432,6 +469,12 @@ class SdnController(app_manager.RyuApp):
 
         link = self.topology.add_link(src_switch, src_port, dst_switch, dst_port)
         link.last_seen = time.monotonic()
+        self.telemetry.register_link(
+            src_switch, src_port, dst_switch, dst_port, link.bw_mbps, link.delay_ms
+        )
+        self.telemetry.register_link(
+            dst_switch, dst_port, src_switch, src_port, link.bw_mbps, link.delay_ms
+        )
         self.counters["links_discovered"] = len(self.topology.links)
         self.event_log.emit(
             "link_discovered",
@@ -444,6 +487,70 @@ class SdnController(app_manager.RyuApp):
         )
         self._sync_topology_file()
         self._drop_packet(msg)
+
+    def _handle_probe(
+        self, datapath: Any, msg: Any, pkt: Any, eth: Any
+    ) -> None:
+        """Handle incoming active latency probe frame."""
+        res = parse_probe_packet(msg.data)
+        if res is None:
+            self._drop_packet(msg)
+            return
+
+        src_dpid, src_port, dst_dpid, dst_port, seq, send_time_ns = res
+        src_switch = self.topology.switch_name_of(src_dpid)
+        dst_switch = self.topology.switch_name_of(dst_dpid)
+
+        if src_switch and dst_switch:
+            recv_time_ns = time.monotonic_ns()
+            latency_ms = self.telemetry.record_probe_received(
+                src_switch=src_switch,
+                dst_switch=dst_switch,
+                seq=seq,
+                recv_time_ns=recv_time_ns,
+            )
+            if latency_ms is not None:
+                LOGGER.debug("probe %s -> %s latency: %.2f ms", src_switch, dst_switch, latency_ms)
+
+        self._drop_packet(msg)
+
+    @set_ev_cls(ofp_event.EventOFPEchoReply, [MAIN_DISPATCHER, CONFIG_DISPATCHER])
+    def echo_reply_handler(self, ev: Any) -> None:
+        """Handle periodic OpenFlow EchoReply to measure control-channel latency per switch."""
+        msg = ev.msg
+        dp = msg.datapath
+        now_ns = time.monotonic_ns()
+        rtt_ms = self.telemetry.record_echo_reply(dp.id, msg.xid, recv_time_ns=now_ns)
+        if rtt_ms is not None:
+            LOGGER.debug("Switch %s (dpid=%d) Echo RTT: %.2f ms", self._switch_name(dp), dp.id, rtt_ms)
+
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def port_stats_reply_handler(self, ev: Any) -> None:
+        """Handle periodic port statistics reply from OpenFlow switch."""
+        msg = ev.msg
+        datapath = msg.datapath
+        switch = self._switch_name(datapath)
+        now_mono = time.monotonic()
+        now_wall = time.time()
+
+        for stat in msg.body:
+            port_no = stat.port_no
+            if port_no > ofproto_v1_3.OFPP_MAX or port_no == ofproto_v1_3.OFPP_LOCAL:
+                continue
+            self.telemetry.record_port_stats_reply(
+                switch=switch,
+                port_no=port_no,
+                tx_bytes=stat.tx_bytes,
+                rx_bytes=stat.rx_bytes,
+                tx_packets=stat.tx_packets,
+                rx_packets=stat.rx_packets,
+                tx_dropped=stat.tx_dropped,
+                rx_dropped=stat.rx_dropped,
+                tx_errors=stat.tx_errors,
+                rx_errors=stat.rx_errors,
+                timestamp_monotonic=now_mono,
+                timestamp_wall=now_wall,
+            )
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev: Any) -> None:
@@ -558,8 +665,101 @@ class SdnController(app_manager.RyuApp):
 
             portmap_path = str(self.config.get("controller.port_map_path", "data/portmap.json"))
             self.topology.save(portmap_path)
+            for link in self.topology.links.values():
+                self.telemetry.register_link(
+                    link.src_switch, link.src_port, link.dst_switch, link.dst_port, link.bw_mbps, link.delay_ms
+                )
+                self.telemetry.register_link(
+                    link.dst_switch, link.dst_port, link.src_switch, link.src_port, link.bw_mbps, link.delay_ms
+                )
         except Exception as exc:
             LOGGER.debug("could not sync topology file: %s", exc)
+
+    def _request_all_port_stats(self) -> None:
+        """Send OFPPortStatsRequest to all currently connected switches."""
+        for switch, datapath in list(self.datapaths.items()):
+            try:
+                ofp = datapath.ofproto
+                parser = datapath.ofproto_parser
+                req = parser.OFPPortStatsRequest(datapath, 0, ofp.OFPP_ANY)
+                datapath.send_msg(req)
+            except Exception as exc:
+                LOGGER.debug("failed to request port stats from %s: %s", switch, exc)
+
+    def _telemetry_loop(self) -> None:
+        """Periodic background thread: poll port stats and write CSV snapshots."""
+        interval = float(self.config.get("telemetry.sample_interval_s", 2.0))
+        hub.sleep(1.0)
+        while True:
+            try:
+                self._request_all_port_stats()
+                hub.sleep(0.15)
+                self.telemetry.write_csv_snapshot()
+                if self.telemetry.is_telemetry_stalled():
+                    LOGGER.warning("Telemetry STALLED: no updates within stall threshold")
+                    self.event_log.emit("telemetry_stall", elapsed_s=self.telemetry.stall_threshold_s)
+            except Exception as exc:
+                LOGGER.debug("telemetry loop error: %s", exc)
+            hub.sleep(max(0.1, interval - 0.15))
+
+    def _send_telemetry_probes(self) -> None:
+        """Emit active latency probes across all registered inter-switch links."""
+        for (src_sw, src_p), (dst_sw, dst_p, _, _) in list(self.telemetry.link_map.items()):
+            dp = self.datapaths.get(src_sw)
+            dst_dp = self.datapaths.get(dst_sw)
+            if dp is None or dst_dp is None:
+                continue
+            try:
+                self.telemetry.probe_seq += 1
+                seq = self.telemetry.probe_seq
+                send_time_ns = time.monotonic_ns()
+                self.telemetry.record_probe_sent(src_sw, dst_sw, seq, send_time_ns)
+
+                probe_data = build_probe_packet(
+                    src_dpid=dp.id,
+                    src_port=src_p,
+                    dst_dpid=dst_dp.id,
+                    dst_port=dst_p,
+                    seq=seq,
+                    src_mac=self.proxy_mac,
+                    send_time_ns=send_time_ns,
+                )
+                ofp = dp.ofproto
+                parser = dp.ofproto_parser
+                out = parser.OFPPacketOut(
+                    datapath=dp,
+                    buffer_id=ofp.OFP_NO_BUFFER,
+                    in_port=ofp.OFPP_CONTROLLER,
+                    actions=[parser.OFPActionOutput(src_p)],
+                    data=probe_data,
+                )
+                dp.send_msg(out)
+            except Exception as exc:
+                LOGGER.debug("error sending probe %s:%d -> %s:%d: %s", src_sw, src_p, dst_sw, dst_p, exc)
+
+    def _send_echo_requests(self) -> None:
+        """Send OFPEchoRequest to each connected switch to measure control-channel RTT."""
+        now_ns = time.monotonic_ns()
+        for dp in list(self.datapaths.values()):
+            try:
+                parser = dp.ofproto_parser
+                req = parser.OFPEchoRequest(dp, data=b"telemetry_echo")
+                self.telemetry.record_echo_request(dp.id, req.xid, send_time_ns=now_ns)
+                dp.send_msg(req)
+            except Exception as exc:
+                LOGGER.debug("error sending echo request to %s: %s", self._switch_name(dp), exc)
+
+    def _probe_loop(self) -> None:
+        """Periodic background thread emitting active latency probes and echo requests."""
+        interval = float(self.config.get("telemetry.probe.probe_interval_s", 1.0))
+        hub.sleep(1.5)
+        while True:
+            try:
+                self._send_echo_requests()
+                self._send_telemetry_probes()
+            except Exception as exc:
+                LOGGER.debug("probe loop error: %s", exc)
+            hub.sleep(interval)
 
     # ----------------------------------------------------------------- ARP --
     def _handle_arp(
@@ -904,6 +1104,7 @@ class SdnController(app_manager.RyuApp):
                     for u, v, d in self.topology.graph.edges(data=True)
                 ],
             },
+            "telemetry": self.telemetry.export_snapshot(),
         }
 
 

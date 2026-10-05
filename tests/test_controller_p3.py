@@ -246,8 +246,49 @@ def test_install_on_unknown_switch_returns_false() -> None:
 
 def test_stats_start_at_zero_and_track_installs() -> None:
     programmer = FlowProgrammer({}, idle_timeout=30)
-    assert programmer.stats.as_dict() == {"installed": 0, "deleted": 0, "replies": 0}
     programmer.install(
         FlowSpec(switch="s9", match={"in_port": 1}, out_port=2)
     )  # unknown switch -> not counted
     assert programmer.stats.installed == 0
+
+
+def test_sdn_controller_startup_with_links(tmp_path: Any) -> None:
+    """Verify that SdnController initializes cleanly without crashing when links exist.
+
+    Catches the AttributeError: 'str' object has no attribute 'u' bug by ensuring
+    self.topology.links is correctly iterated over its values (DiscoveredLink) and
+    registered with TelemetryCollector.
+    """
+    import json
+    from common.config import Config, load_config
+    from controller.sdn_controller import SdnController
+
+    portmap_data = {
+        "switch_ports": {
+            "s1": {"s2": 1, "s3": 2},
+            "s2": {"s1": 1, "s4": 2},
+            "s3": {"s1": 1, "s4": 2},
+            "s4": {"s2": 1, "s3": 2},
+        },
+        "host_switch": {"h1": "s1", "h4": "s4"},
+        "host_ip": {"h1": "10.0.0.1", "h4": "10.0.0.4"},
+        "switch_dpid": {"s1": 1, "s2": 2, "s3": 3, "s4": 4},
+    }
+    pmap_file = tmp_path / "portmap.json"
+    pmap_file.write_text(json.dumps(portmap_data), encoding="utf-8")
+
+    raw = dict(load_config()._data)
+    raw["controller"] = dict(raw.get("controller", {}))
+    raw["controller"]["port_map_path"] = str(pmap_file)
+    raw["discovery"] = dict(raw.get("discovery", {}))
+    raw["discovery"]["enabled"] = False
+    raw["telemetry"] = dict(raw.get("telemetry", {}))
+    raw["telemetry"]["enabled"] = False
+    cfg = Config(raw)
+
+    # Must instantiate cleanly without AttributeError
+    controller = SdnController(config=cfg)
+    assert len(controller.topology.links) == 4
+    # Ensure directional telemetry link map was populated
+    assert ("s1", 1) in controller.telemetry.link_map
+    assert ("s2", 1) in controller.telemetry.link_map

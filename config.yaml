@@ -85,7 +85,10 @@ controller:
 # Topology discovery (P4)
 # -----------------------------------------------------------------------------
 discovery:
+  lldp_interval_s: 2.0
   poll_interval_s: 2.0
+  link_timeout_s: 6.0
+  discovery_timeout_s: 10.0
   # k for k-shortest paths per source/destination pair.
   k_shortest: 3
   # Ignore these port pairs when building the graph (e.g. host<->switch links are
@@ -133,10 +136,21 @@ ml:
   window_w: 12               # 12 samples * 2 s = 24 s of history
   # Label horizon: label = 1 if the link is congested at ANY point in the next
   # N seconds. Must be strictly in the future relative to the feature window.
-  horizon_n_s: 20.0
+  horizon_n_s: 10.0
   # Guard band between the end of the feature window and the start of the label
   # horizon. Prevents the boundary sample from leaking into the label.
   label_gap_s: 2.0
+  # Explicit feature allowlist: only these telemetry/signal fields and their
+  # rolling derivatives may be included in the training matrix.
+  # Link identifiers (src_switch, dst_switch, ports) are strictly disallowed.
+  features:
+    - tx_rate_mbps
+    - rx_rate_mbps
+    - tx_packet_rate_pps
+    - rx_packet_rate_pps
+    - utilization
+    - latency_ms
+    - loss_pct
   models:
     - logistic_regression
     - random_forest

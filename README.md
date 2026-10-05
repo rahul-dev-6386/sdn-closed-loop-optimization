@@ -14,8 +14,8 @@ probability into a path cost function. The model never picks a path itself.
 | P2 | Multipath topology (`topology/multipath_topology.py`) | **done** (22/22) |
 | P3 | OF1.3 controller + ARP proxy + shortest-path forwarding | **done** (17/17) |
 | P4 | Topology discovery (NetworkX, k-shortest paths) | **done** (20/20) |
-| P5 | Telemetry (rates, latency probes, loss, CSV) | pending |
-| P6 | Dataset generation + labelling | pending |
+| P5 | Telemetry (rates, latency probes, loss, CSV) | **done** (11/11) |
+| P6 | Dataset generation + labelling (live runs, 5 patterns, offline future labels) | **done** (24/24) |
 | P7 | ML training + evaluation | pending |
 | P8 | ML inference inside the controller | pending |
 | P9 | Cost function, hysteresis, per-flow rerouting | pending |
@@ -95,11 +95,10 @@ controller/            sdn_controller.py topology.py routing.py telemetry.py
 ml/                    collect_dataset.py features.py train.py predict.py evaluate.py
 topology/              multipath_topology.py
 traffic/               generate.py experiments.py
-api/                   main.py settings.py security.py db.py sdn.py
-dashboard/react-app/   React + Vite console (src/api.ts, App.tsx, components/)
+future/                api/ (FastAPI), dashboard/ (React), tests/ (test_api_p12.py)
 data/                  telemetry CSV, logs
 results/               model.joblib, metrics, figures, experiment CSVs
-tests/                 pytest suite
+tests/                 active pytest suite (P1-P6)
 ```
 
 ---
@@ -456,20 +455,34 @@ topology dynamically in memory backed by **NetworkX**:
 2. **Loop-Safe LLDP Link Discovery**:
    - The controller crafts standard IEEE 802.1AB LLDP frames containing Chassis ID
      (`dpid:<dpid>`) and Port ID (`struct.pack("!I", port_no)`).
-   - Periodic discovery probes are emitted out of all active switch ports without flooding.
+   - Periodic discovery probes are emitted out of active switch ports only. **Host-facing ports are explicitly excluded** (via known host attachments and learned locations), preventing unnecessary framing on edge links.
    - Incoming LLDP frames (`ethertype 0x88cc`) are captured at the controller by table-miss,
      parsed to identify `(src_dpid, src_port) -> (dst_dpid, dst_port)`, and immediately
      dropped so they never loop through the multipath diamond.
+
+3. **Dynamic Port Status & LLDP Timeouts**:
+   - Controller listens for `EventOFPPortStatus`. When an OpenFlow port status changes to DOWN (`OFPPS_LINK_DOWN`, `OFPPC_PORT_DOWN`, or `OFPPR_DELETE`), the incident link is purged immediately.
+   - When a port returns to UP, an LLDP probe is emitted and the link is restored.
+   - A backup link age timeout (`discovery.link_timeout_s`, default 6.0 s) runs in the discovery loop to retire links if LLDP frames cease arriving.
+
+4. **Multi-Metric Path Weighting & Asymmetric Optimization**:
+   - In asymmetric topologies (e.g. Path 1: 5 ms delay, 10 Mbps; Path 2: 20 ms delay, 100 Mbps; Path 3: 35 ms delay, 5 Mbps direct), each metric selects a distinct optimal path:
+     - `hops` selects Path 3 (fewest hops).
+     - `delay_ms` selects Path 1 (lowest latency).
+     - `bw_mbps` (weighted by $1/\text{bw}$) selects Path 2 (highest bandwidth).
+   - Bottleneck bandwidth along each path is evaluated separately as $\min(\text{bw}_i)$.
+   - Handles requests where $k > \text{available paths}$ safely without crashing.
 
 ### Commands
 
 ```bash
 make topo-discovery   # Print discovered NetworkX graph + paths (no root needed)
-make verify-p4        # Run P4 acceptance test suite (20 checks)
-make test             # Run unit test suite (112 tests)
+make verify-p4        # Run P4 in-memory acceptance test suite (25 checks, no root needed)
+make verify-p4-live   # Run P4 LIVE acceptance test against Mininet + Ryu (NEEDS ROOT)
+make test             # Run unit test suite (114 tests, 0 warnings)
 ```
 
-### P4 acceptance test
+### P4 In-Memory Acceptance Test
 
 ```bash
 make verify-p4
@@ -481,12 +494,164 @@ Checks, in order:
 3. Both diamond paths between `h1` and `h4` enumerated:
    - `h1 -> s1 -> s2 -> s4 -> h4` (predicted RTT = 24.00 ms, bottleneck = 10.0 Mbps)
    - `h1 -> s1 -> s3 -> s4 -> h4` (predicted RTT = 24.00 ms, bottleneck = 10.0 Mbps)
-4. Path weighting variations (`hops`, `delay_ms`, `bw_mbps`).
+4. Multi-metric path weighting on asymmetric fixture:
+   - `hops` selects 3-hop direct path (`h1->s1->s4->h4`, bottleneck 5.0 Mbps)
+   - `delay_ms` selects lowest-latency path (`h1->s1->s2->s4->h4`, delay 12 ms, bottleneck 10.0 Mbps)
+   - `bw_mbps` selects highest-bandwidth path (`h1->s1->s3->s4->h4`, bottleneck 100.0 Mbps)
+   - Asserts all 3 metrics choose distinct paths.
+   - Asserts bottleneck bandwidth is computed separately as $\min(\text{bw}_i)$.
+   - Asserts requesting $k=5$ on a 3-path graph safely returns 3 paths without crashing.
 5. Dynamic link failure and convergence (removing `s1-s2` immediately leaves only `s3` path; restoring restores both).
 6. LLDP frame serialization and deserialization.
 7. Controller integration and snapshot export.
 
-**Result: 20 passed, 0 failed.**
+**Result: 25 passed, 0 failed.**
+
+### P4 Live Discovery Acceptance Test (needs root)
+
+```bash
+sudo .venv/bin/python scripts/verify_p4_live.py
+# or: make verify-p4-live
+```
+Asserts, against real Mininet OVS bridges and Ryu:
+1. Ryu and Mininet diamond started; 4 switch-to-switch links learned dynamically via LLDP.
+2. Port pairings match Mininet exact physical wiring (`s1:2<->s2:1`, `s1:3<->s3:1`, `s2:2<->s4:1`, `s3:2<->s4:2`).
+3. 0 mismatches between discovered graph and `config.yaml` spec.
+4. Ping between h1 and h4 has 0% loss; hosts dynamically attached to correct switches and ports.
+5. Bringing `s1--s2` down triggers link removal within `link_timeout_s`, leaving only the `s3` path.
+6. Bringing `s1--s2` up triggers LLDP re-discovery and path restoration.
+
+### Upstream Pytest Warnings (Explained & Filtered)
+
+Prior test runs reported 8 deprecation warnings originating entirely from pinned 3rd-party dependencies under Python 3.9:
+1. `oslo_config.cfg:612`: `distutils.version.LooseVersion` deprecation (deprecated in Python 3.10, removed in 3.12).
+2. `ryu.lib.packet.zebra`: `distutils.version.LooseVersion` deprecation (deprecated in Python 3.10).
+3. `eventlet.patcher:1`: `imp` module deprecation (deprecated since Python 3.4 in favor of `importlib`).
+4. `eventlet.support.greenlets:6,7`: `distutils.version.LooseVersion` deprecation.
+5. `dns.hash`: `dns.hash` module deprecation in dnspython (sub-dependency of eventlet).
+6. `dns.namedict`: `collections.MutableMapping` ABC import deprecation.
+
+These are pinned upstream library internals that do not affect runtime functionality. They are filtered in `pytest.ini`, bringing `make test` to **125 passed, 0 warnings**.
+
+---
+
+## P5 — Telemetry: Port Stats, Rate Computation, Latency Probes, Loss & Dataset Logging
+
+Phase 5 implements real-time closed-loop telemetry collection across the OpenFlow 1.3 datapaths:
+
+1. **Rate Computation over Monotonic Elapsed Time**:
+   - Rates are computed from counter DIFFERENCES ($\Delta\text{tx\_bytes}$) divided by the **actual elapsed time** ($\Delta t$ from `time.monotonic()`), not nominal 2.0 s.
+   - Robustly handles 64-bit unsigned integer wrapping ($2^{64}$).
+   - Handles counter resets and switch reboots safely: resets baseline to 0 rather than creating bogus multi-Exabit spikes.
+   - Directional link records are keyed by `(src_switch, dst_switch, direction)`.
+   - Utilization is computed per direction: $\text{utilization} = \text{tx\_rate\_mbps} / \text{capacity\_mbps}$.
+
+2. **Active Latency Probes (Controller-Injected)**:
+   - Inter-switch latency is measured via high-resolution active probe frames (`PROBE_ETHERTYPE = 0x88B5`) injected by the controller with nanosecond timestamps (`time.monotonic_ns()`), **never derived from static port stats**.
+   - Switches carry a high-priority rule (`priority=65000`) matching `0x88B5` that immediately delivers probes to the controller with zero buffer delay.
+   - Probes that exceed timeout (0.5 s) are expired and logged as packet loss.
+   - Tracks sliding window (default 30 samples) of latency, jitter, and probe loss percentage.
+
+3. **Composite Loss & Staleness Tracking**:
+   - Loss combines interface drops/errors ($\text{tx\_dropped} + \text{rx\_errors}$) with probe loss.
+   - Flags stale samples when $\Delta t > \text{sample\_interval\_s} \times \text{stall\_timeout\_multiple}$.
+   - Detects telemetry stalls when updates cease, enabling rule 7 fallback to shortest path.
+
+4. **Continuous CSV Dataset Logging**:
+   - Writes timestamped snapshots to `data/telemetry.csv` with fields:
+     `run_id, timestamp, src_switch, dst_switch, direction, src_port, dst_port, capacity_mbps, tx_rate_mbps, rx_rate_mbps, tx_packet_rate_pps, rx_packet_rate_pps, utilization, latency_ms, loss_pct, tx_bytes, rx_bytes, tx_packets, rx_packets, tx_dropped, rx_errors, probe_loss_pct, is_stale, is_congested`.
+
+### Commands
+
+```bash
+make verify-p5            # Run P5 in-memory acceptance test suite (22 checks, no root needed)
+sudo make verify-p5-live  # Run P5 LIVE acceptance test against Mininet + Ryu + iperf3 (NEEDS ROOT)
+make test                 # Run unit test suite (125 tests, 0 warnings)
+```
+
+### P5 In-Memory Acceptance Test
+
+```bash
+make verify-p5
+```
+
+Checks, in order:
+1. Counter difference calculations, 64-bit integer wrap handling, and counter reset suppression.
+2. Rate computation divided by actual elapsed monotonic time (2.5 s elapsed time produces exact 8.0 Mbps).
+3. Directional keying `(s1, s2, 'forward')`, capacity mapping (10.0 Mbps), and utilization (0.80).
+4. Active probe serialization (60B min Ethernet frame), nanosecond parsing, 5.0 ms RTT, and probe timeout/loss tracking (50%).
+5. Telemetry staleness flagging when sample interval exceeds stall threshold.
+6. CSV snapshot export schema and fieldname conformance.
+
+**Result: 22 passed, 0 failed.**
+
+### P5 Live Acceptance Test (needs root)
+
+```bash
+sudo make verify-p5-live
+```
+Asserts against live Mininet diamond and Ryu:
+1. Controller starts and accepts OpenFlow 1.3 connections on port 6653.
+2. Mininet diamond topology connects and h1 <-> h4 initial ping succeeds (0% loss).
+3. Idle baseline: s1->s2 and s1->s3 rates < 0.1 Mbps; probe latency near configured 5 ms delay.
+4. iperf3 2.0 Mbps UDP test over s2 path: measured tx_rate within ~10% of 2.0 Mbps; idle path s3 remains near 0.
+5. iperf3 5.0 Mbps UDP test over s2 path: measured tx_rate within ~10% of 5.0 Mbps; idle path s3 remains near 0.
+6. iperf3 8.0 Mbps UDP test over s2 path: measured tx_rate within ~10% of 8.0 Mbps; probe latency tracks queue delay under load.
+7. Logs all records to `data/telemetry.csv` and prints CSV head and stats.
+
+---
+
+## P6 — Dataset Generation: Live Collection, Multi-Pattern Traffic & Future-Congestion Labeling
+
+Phase 6 produces a balanced, leak-free dataset for predictive ML training:
+
+1. **Traffic Patterns (`traffic/generate.py`)**:
+   - `ramp`: Staircase offered load from base (2.0 Mbps) up to peak (12.0 Mbps), exceeding the 10 Mbps bottleneck.
+   - `bursty_onoff`: Periodic square-wave bursts alternating between high load (30 s on) and recovery (20 s off).
+   - `poisson`: Flow arrivals following an exponential inter-arrival distribution with mean 20.0 Hz.
+   - `tcp_udp_mix`: Heterogeneous workload with unresponsive UDP (30%) and responsive TCP backoff dynamics.
+   - `elephant_mice`: 1 sustained elephant bulk transfer (6.5 Mbps) plus 4 transient mice bursts.
+   - Full random seed determinism and reproducibility.
+
+2. **Feature Allowlist & Zero Link-Identity Leakage**:
+   - Explicit feature allowlist loaded from `config.yaml` (`ml.features`):
+     `tx_rate_mbps`, `rx_rate_mbps`, `tx_packet_rate_pps`, `rx_packet_rate_pps`, `utilization`, `latency_ms`, `loss_pct`.
+   - Link identity fields (`src_switch`, `dst_switch`, `src_port`, `dst_port`, `direction`, `run_id`) are strictly forbidden in the feature matrix.
+   - Load is alternated across runs (`s1->s2` on even runs, `s1->s3` on odd runs) via static flow steering so congestion labels appear on both paths.
+
+3. **Strict Future-Congestion Horizon Labeling (`ml/collect_dataset.py`)**:
+   - Aligned to sampling grid $\Delta t = 2.0\text{ s}$.
+   - Ground truth instantaneous congestion: $\text{utilization} \ge 0.80 \lor \text{loss} \ge 2.0\% \lor \text{latency} \ge 40.0\text{ ms}$.
+   - **Labeling Rule**: $\text{label}(t) = 1 \iff \exists t' \in [t + \text{gap}, t + \text{gap} + \text{horizon}]$ where $\text{congested}(t') == 1$.
+   - Configured horizon $H = 20.0\text{ s}$, guard band $G = 2.0\text{ s}$.
+   - **Zero Leakage**: Instantaneous congestion at $t$ alone does *not* set label=1 if future is clear.
+   - Truncation boundaries at the end of an episode are flagged with `horizon_valid = False` to prevent truncation bias.
+   - Calculates exact `lead_time_s` for every positive sample.
+
+4. **Automated Quality Checker (`scripts/check_live_dataset.py`)**:
+   - Cadence check: $\Delta t$ mean and std centered around 2.0 s.
+   - Staleness check: Fails if stale-row fraction exceeds 5%.
+   - Congestion check: Asserts peak utilization on loaded link exceeds threshold (runs with zero congestion fail).
+   - Idle-link baseline: Asserts median delay $\approx 5.0\text{ ms}$ and median utilization $< 5\%$.
+   - Class distribution reporting per pattern, per link-direction, and per run.
+
+### Commands
+
+```bash
+make verify-p6          # Run Phase 6 acceptance tests on isolated tempdir fixtures (27 checks)
+make test               # Run unit test suite (119 tests, 0 warnings)
+sudo make dataset-smoke # Run smoke collection (needs root): 1 run/pattern, 30s, writes to data/smoke/
+sudo make dataset-live  # Run full live collection (needs root): 10 runs/pattern, 90s, writes to data/
+make check-smoke        # Quality & integrity check on smoke dataset
+make check-dataset      # Quality & integrity check on full live dataset
+```
+
+### P6 Acceptance Test
+
+```bash
+make verify-p6
+```
+**Result: 27 passed, 0 failed.**
 
 ---
 
@@ -629,6 +794,58 @@ These are encoded in `config.yaml` and asserted by `tests/test_smoke.py`:
 - **Rule 8** — all four routing modes must appear in `experiments.modes`.
 - **Rule 5** — `improvement_ratio` strictly in `(0, 1)`, so hysteresis is real.
 - **Reproducibility** — every line in `requirements.txt` carries `==`.
+
+---
+
+## Phase 5: Telemetry & Active Probes (`controller/telemetry.py`)
+
+- **Counter Difference Rate Calculation**: Uses `time.monotonic()` to divide counter differences by actual elapsed time $\Delta t$, correctly handling 64-bit counter overflow wraps and counter resets without false rate spikes.
+- **Active Latency Probing**: Controller injects timestamped probe frames (`EtherType = 0x88B5`) with monotonic nanosecond timestamps across inter-switch links; round-trip control channel bias is tracked via OpenFlow echo RTT to ensure accurate data plane delay measurement.
+- **Composite Loss & Staleness**: Integrates port drop/error counters with active probe losses. Flagged with `is_stale` if samples are missed for $> 3\times$ the polling interval; detects complete telemetry stalls to trigger safe shortest-path fallback (Rule 7).
+- **CSV Logging**: Writes full link telemetry records keyed by `(src_switch, dst_switch, direction)` to `data/telemetry.csv`.
+
+Acceptance commands:
+```bash
+make verify-p5       # pure logic: rate diffs, wrap/reset, probes, CSV export
+sudo make verify-p5-live  # live verification with iperf3 on Mininet diamond
+```
+
+---
+
+## Phase 6: Traffic Generation & Future-Congestion Labeled Dataset
+
+- **5 Traffic Patterns (`traffic/generate.py`)**:
+  - `ramp`: Gradual staircase load climbing in discrete steps from 2.0 to 12.0 Mbps.
+  - `bursty_onoff`: Periodic high-load bursts (12.0 Mbps, 30s) and idle recovery phases (2.0 Mbps, 20s).
+  - `poisson`: Stochastic flow arrival process with Poisson inter-arrival intervals and burst periods.
+  - `tcp_udp_mix`: Heterogeneous traffic mixing unresponsive UDP and responsive TCP flows.
+  - `elephant_mice`: Heavy continuous elephant TCP flow (6.5 Mbps) with sporadic short-lived mice UDP bursts.
+- **Live Dataset Collection (`ml/collect_dataset.py`)**:
+  - Training dataset collected from **real live runs**: Mininet diamond + Ryu controller + real iperf3 traffic.
+  - Alternating traffic paths across runs: even runs via `s2` (`s1->s2->s4`), odd runs via `s3` (`s1->s3->s4`), ensuring positive and negative samples appear on both paths.
+  - Strict exclusion of link identity (`src_switch`, `dst_switch`, `ports`, etc.) from ML feature inputs.
+  - Sequential episode execution with `mn -c` isolation between runs.
+  - Full resumability via `data/dataset_progress.json`.
+  - Live data files: `data/telemetry_live.csv` (raw) and `data/telemetry_live_labeled.csv` (labeled).
+- **Strict Offline Future-Congestion Labeling (`ml/collect_dataset.py`)**:
+  - Config-driven parameters: `horizon_n_s: 10.0`, `label_gap_s: 2.0`.
+  - Future label: $L(t) = 1$ if link is congested at ANY point in $[t + 2\text{s}, t + 12\text{s}]$.
+  - Zero label leakage: Instantaneous congestion at time $t$ does NOT label $t$ as future-congested if future is uncongested.
+  - Boundary safety: Samples within the final 12s of an episode where future cannot be observed are marked `horizon_valid = False` and excluded from training.
+- **Isolated Acceptance Verification (`scripts/verify_p6.py`)**:
+  - Runs strictly in-memory and on isolated temporary fixtures; **never** creates or modifies `data/telemetry.csv` or `data/telemetry_live.csv`.
+  - Verifies offered loads, seed determinism, zero leakage, horizon truncation, and balanced class distributions across both paths.
+
+Acceptance & Execution commands:
+```bash
+# Offline verification & labeling check (no root needed):
+make verify-p6
+
+# Live multi-pattern dataset collection (needs root):
+make dataset-live
+# or explicitly with custom parameters:
+sudo .venv/bin/python ml/collect_dataset.py --live --runs-per-pattern 10 --duration 90
+```
 
 ---
 

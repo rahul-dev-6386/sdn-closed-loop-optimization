@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.config import Config, load_config
 from common.logging_utils import setup_logging
+from common.proc import check_required_tools, mn_clean, venv_bin
 from controller import portmap as portmap_mod
 from topology.multipath_topology import (
     MultipathTopology,
@@ -47,6 +48,36 @@ THIN = "-" * 78
 PASSED = 0
 FAILED = 0
 LOGGER = None
+
+
+def preflight(config: Any) -> bool:
+    """Validate tools, controller imports, and required config before running."""
+    print(f"\n{THIN}\n[Preflight System Verification]\n{THIN}")
+    tools = ("mn", "ovs-vsctl", "ovs-ofctl", "ryu-manager", "iperf3")
+    found_tools = check_required_tools(tools)
+    all_tools_ok = True
+    for t in tools:
+        path = found_tools.get(t)
+        if path:
+            print(f"  [TOOL] {t:<12} -> {path}")
+        else:
+            print(f"  [TOOL] {t:<12} -> MISSING", file=sys.stderr)
+            all_tools_ok = False
+
+    # Controller import check
+    try:
+        import controller.sdn_controller  # noqa: F401
+        print("  [IMPORT] controller.sdn_controller imported cleanly")
+        import_ok = True
+    except Exception as exc:
+        print(f"  [IMPORT ERROR] Failed to import controller.sdn_controller: {exc}", file=sys.stderr)
+        import_ok = False
+
+    # Config keys check
+    req_keys = ["topology.switches", "topology.links", "controller.port_map_path"]
+    cfg_ok = all(config.get(k) is not None for k in req_keys)
+
+    return all_tools_ok and import_ok and cfg_ok
 
 
 def ok(msg: str) -> None:
@@ -85,7 +116,7 @@ class RyuProcess:
 
     def __init__(self, venv: str, log_path: str, port: int = 6653,
                  host: str = "127.0.0.1", app: str = "controller.sdn_controller") -> None:
-        self.ryu = os.path.join(venv, "bin", "ryu-manager")
+        self.ryu = venv_bin("ryu-manager")
         self.log_path = log_path
         self.port = port
         self.host = host
@@ -178,13 +209,14 @@ def iperf_throughput(client: Any, server: Any, server_ip: str, seconds: int = 10
     is listening at ``server_ip``.
     """
     port = 5201
-    server.cmd("pkill -f 'iperf3 -s' 2>/dev/null; true")
+    iperf = venv_bin("iperf3")
+    server.cmd(f"pkill -f '{iperf} -s' 2>/dev/null; true")
     time.sleep(0.3)
-    server.cmd(f"iperf3 -s -p {port} -D")
+    server.cmd(f"{iperf} -s -p {port} -D")
     time.sleep(0.8)
-    cmd = f"iperf3 -c {server_ip} -p {port} -t {seconds} -J " + ("-R " if reverse else "")
+    cmd = f"{iperf} -c {server_ip} -p {port} -t {seconds} -J " + ("-R " if reverse else "")
     raw = client.cmd(cmd)
-    server.cmd("pkill -f 'iperf3 -s' 2>/dev/null; true")
+    server.cmd(f"pkill -f '{iperf} -s' 2>/dev/null; true")
     if not raw.strip():
         return 0.0, raw
     try:
@@ -201,7 +233,7 @@ def iperf_throughput(client: Any, server: Any, server_ip: str, seconds: int = 10
 def ofctl(args: List[str]) -> str:
     """Run ovs-ofctl and return stdout (empty string on failure)."""
     proc = subprocess.run(
-        ["ovs-ofctl", "-OOpenFlow13", *args], capture_output=True, text=True
+        [venv_bin("ovs-ofctl"), "-OOpenFlow13", *args], capture_output=True, text=True
     )
     return proc.stdout if proc.returncode == 0 else ""
 
@@ -262,6 +294,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="expected h1->h4 throughput")
     p.add_argument("--throughput-tolerance", type=float, default=0.10)
     p.add_argument("--controller-port", type=int, default=6653)
+    p.add_argument("--dry-run", action="store_true", help="Perform preflight and import checks without root/Mininet")
     p.add_argument("--out", default=None)
     return p.parse_args(argv)
 
@@ -271,6 +304,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     config = load_config(args.config)
     LOGGER = setup_logging(config, name="verify.p3")
+
+    if not preflight(config):
+        print("\nPreflight check failed. Aborting.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("\n--dry-run requested: Preflight passed successfully. Exiting.")
+        return 0
 
     if os.geteuid() != 0:
         print("ERROR: must run as root.", file=sys.stderr)
@@ -325,7 +366,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         topo.build()
         h1 = topo.net.get(h1_name)
         h4 = topo.net.get(h4_name)
-        bridges = subprocess.run(["ovs-vsctl", "list-br"],
+        bridges = subprocess.run([venv_bin("ovs-vsctl"), "list-br"],
                                  capture_output=True, text=True).stdout.split()
         check("all 4 OVS bridges present", len(bridges) == 4, f"{sorted(bridges)}")
 
@@ -494,12 +535,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             topo.stop()
         except Exception as exc:  # pragma: no cover
             bad(f"Mininet stop raised {exc!r}")
-        mn_bin = os.path.join(venv, "bin", "mn")
-        print(f"  ....   running `{mn_bin} -c`")
-        subprocess.run([mn_bin, "-c"], capture_output=True, text=True)
+        mn_clean()
         time.sleep(2)
 
-        bridges = subprocess.run(["ovs-vsctl", "list-br"],
+        bridges = subprocess.run([venv_bin("ovs-vsctl"), "list-br"],
                                  capture_output=True, text=True).stdout.split()
         ps = subprocess.run(["ps", "-eo", "args"], capture_output=True,
                             text=True).stdout

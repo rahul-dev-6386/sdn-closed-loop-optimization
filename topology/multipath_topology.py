@@ -50,6 +50,7 @@ import networkx as nx
 
 from common.config import Config, load_config
 from common.logging_utils import setup_logging
+from common.proc import venv_bin
 
 LOGGER = logging.getLogger("topology.multipath")
 
@@ -638,7 +639,7 @@ class MultipathTopology:
 
         def vsctl(*args: str) -> subprocess.CompletedProcess:
             return subprocess.run(
-                ["ovs-vsctl", "--timeout=10", *args],
+                [venv_bin("ovs-vsctl"), "--timeout=10", *args],
                 capture_output=True, text=True, check=False,
             )
 
@@ -684,6 +685,8 @@ class MultipathTopology:
                 self.net.stop()
             finally:
                 self.net = None
+
+    teardown = stop
 
     # ----------------------------------------------------------- inspection --
     def port_of(self, switch_name: str, neighbour_name: str) -> int:
@@ -749,7 +752,7 @@ class StaticFlowInstaller:
 
     def __init__(self, timeout: float = 10.0) -> None:
         self.timeout = timeout
-        self._ofctl = "ovs-ofctl"
+        self._ofctl = venv_bin("ovs-ofctl")
 
     def _run(self, args: Sequence[str]) -> str:
         """Run ``ovs-ofctl`` with the given arguments and return stdout."""

@@ -1,0 +1,207 @@
+.venv/bin/python -m pytest tests/ -v
+============================= test session starts ==============================
+platform linux -- Python 3.9.25, pytest-8.3.4, pluggy-1.6.0 -- /home/rahul/sdn_project/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/rahul/sdn_project
+configfile: pytest.ini
+plugins: anyio-4.12.1
+collecting ... collected 136 items
+
+tests/test_api_p12.py::test_hash_and_verify_roundtrip PASSED             [  0%]
+tests/test_api_p12.py::test_hashes_are_salted_and_unique PASSED          [  1%]
+tests/test_api_p12.py::test_empty_password_is_rejected PASSED            [  2%]
+tests/test_api_p12.py::test_malformed_hashes_verify_false_rather_than_raising[] PASSED [  2%]
+tests/test_api_p12.py::test_malformed_hashes_verify_false_rather_than_raising[nonsense] PASSED [  3%]
+tests/test_api_p12.py::test_malformed_hashes_verify_false_rather_than_raising[pbkdf2_sha256$notanint$aa$bb] PASSED [  4%]
+tests/test_api_p12.py::test_malformed_hashes_verify_false_rather_than_raising[other$1000$aa$bb] PASSED [  5%]
+tests/test_api_p12.py::test_malformed_hashes_verify_false_rather_than_raising[a$b$c] PASSED [  5%]
+tests/test_api_p12.py::test_long_passphrase_is_not_silently_truncated PASSED [  6%]
+tests/test_api_p12.py::test_access_token_carries_identity_and_type PASSED [  7%]
+tests/test_api_p12.py::test_refresh_token_omits_username PASSED          [  8%]
+tests/test_api_p12.py::test_refresh_token_cannot_be_used_as_access PASSED [  8%]
+tests/test_api_p12.py::test_access_token_cannot_be_used_as_refresh PASSED [  9%]
+tests/test_api_p12.py::test_every_token_has_a_unique_jti PASSED          [ 10%]
+tests/test_api_p12.py::test_token_signed_with_another_secret_is_rejected PASSED [ 11%]
+tests/test_api_p12.py::test_expired_access_token_is_rejected PASSED      [ 11%]
+tests/test_api_p12.py::test_expiry_is_in_the_future PASSED               [ 12%]
+tests/test_api_p12.py::test_garbage_token_is_rejected PASSED             [ 13%]
+tests/test_api_p12.py::test_settings_defaults_secret_is_ephemeral_when_unset PASSED [ 13%]
+tests/test_api_p12.py::test_settings_exposes_mapping_get_for_logging_setup PASSED [ 14%]
+tests/test_api_p12.py::test_mongo_disabled_when_url_blank PASSED         [ 15%]
+tests/test_api_p12.py::test_cors_origins_parse_to_a_list PASSED          [ 16%]
+tests/test_controller_p3.py::test_mac_validation[0a:00:00:00:00:01-True] PASSED [ 16%]
+tests/test_controller_p3.py::test_mac_validation[FF:FF:FF:FF:FF:FF-True] PASSED [ 17%]
+tests/test_controller_p3.py::test_mac_validation[0a:00:00:00:01-False] PASSED [ 18%]
+tests/test_controller_p3.py::test_mac_validation[0a:00:00:00:00:0g-False] PASSED [ 19%]
+tests/test_controller_p3.py::test_mac_validation[0a-00-00-00-00-01-False] PASSED [ 19%]
+tests/test_controller_p3.py::test_mac_validation[-False] PASSED          [ 20%]
+tests/test_controller_p3.py::test_learn_and_lookup PASSED                [ 21%]
+tests/test_controller_p3.py::test_invalid_mac_is_rejected_at_learn PASSED [ 22%]
+tests/test_controller_p3.py::test_first_request_learns_sender_but_does_not_reply PASSED [ 22%]
+tests/test_controller_p3.py::test_second_request_is_answered_from_the_table PASSED [ 23%]
+tests/test_controller_p3.py::test_gratuitous_arp_is_ignored PASSED       [ 24%]
+tests/test_controller_p3.py::test_proxy_answers_for_its_own_ip PASSED    [ 25%]
+tests/test_controller_p3.py::test_malformed_sender_mac_is_ignored PASSED [ 25%]
+tests/test_controller_p3.py::test_mac_change_is_logged_but_accepted PASSED [ 26%]
+tests/test_controller_p3.py::test_no_decision_path_ever_says_flood PASSED [ 27%]
+tests/test_controller_p3.py::test_arp_reply_bytes_are_correctly_rewritten PASSED [ 27%]
+tests/test_controller_p3.py::test_arp_reply_reply_target_is_the_claimed_owner PASSED [ 28%]
+tests/test_controller_p3.py::test_flow_spec_describe_is_readable PASSED  [ 29%]
+tests/test_controller_p3.py::test_matchless_flow_must_be_table_miss PASSED [ 30%]
+tests/test_controller_p3.py::test_table_miss_spec_is_valid PASSED        [ 30%]
+tests/test_controller_p3.py::test_flow_spec_carries_idle_timeout PASSED  [ 31%]
+tests/test_controller_p3.py::test_build_match_rejects_unknown_fields PASSED [ 32%]
+tests/test_controller_p3.py::test_build_match_accepts_real_fields PASSED [ 33%]
+tests/test_controller_p3.py::test_install_on_unknown_switch_returns_false PASSED [ 33%]
+tests/test_controller_p3.py::test_stats_start_at_zero_and_track_installs PASSED [ 34%]
+tests/test_dataset_p6.py::test_all_traffic_patterns_produce_valid_load[ramp] PASSED [ 35%]
+tests/test_dataset_p6.py::test_all_traffic_patterns_produce_valid_load[bursty_onoff] PASSED [ 36%]
+tests/test_dataset_p6.py::test_all_traffic_patterns_produce_valid_load[poisson] PASSED [ 36%]
+tests/test_dataset_p6.py::test_all_traffic_patterns_produce_valid_load[tcp_udp_mix] PASSED [ 37%]
+tests/test_dataset_p6.py::test_all_traffic_patterns_produce_valid_load[elephant_mice] PASSED [ 38%]
+tests/test_dataset_p6.py::test_seed_reproducibility PASSED               [ 38%]
+tests/test_dataset_p6.py::test_future_labeling_logic_positive PASSED     [ 39%]
+tests/test_dataset_p6.py::test_no_label_leakage_present_alone_is_not_labeled PASSED [ 40%]
+tests/test_dataset_p6.py::test_horizon_truncation_detection PASSED       [ 41%]
+tests/test_dataset_p6.py::test_dataset_class_balance_and_report PASSED   [ 41%]
+tests/test_dataset_p6.py::test_dataset_csv_export PASSED                 [ 42%]
+tests/test_portmap.py::test_port_lookup PASSED                           [ 43%]
+tests/test_portmap.py::test_require_port_raises_with_useful_message PASSED [ 44%]
+tests/test_portmap.py::test_switch_graph_has_the_loop PASSED             [ 44%]
+tests/test_portmap.py::test_shortest_path_is_two_hops PASSED             [ 45%]
+tests/test_portmap.py::test_same_switch_path PASSED                      [ 46%]
+tests/test_portmap.py::test_full_path_includes_hosts PASSED              [ 47%]
+tests/test_portmap.py::test_hosts_on PASSED                              [ 47%]
+tests/test_portmap.py::test_json_round_trip PASSED                       [ 48%]
+tests/test_portmap.py::test_load_missing_file_is_explicit PASSED         [ 49%]
+tests/test_portmap.py::test_load_ignores_extra_keys PASSED               [ 50%]
+tests/test_portmap.py::test_validate_against_live_ports_is_quiet_when_consistent PASSED [ 50%]
+tests/test_portmap.py::test_validate_against_flags_wrong_ports PASSED    [ 51%]
+tests/test_portmap.py::test_validate_flags_disconnected_switch PASSED    [ 52%]
+tests/test_portmap.py::test_rule_chain_for_h1_to_h4_via_s2 PASSED        [ 52%]
+tests/test_portmap.py::test_rule_chain_ports_are_internally_consistent PASSED [ 53%]
+tests/test_portmap.py::test_rule_chain_covers_every_switch_on_the_path PASSED [ 54%]
+tests/test_portmap.py::test_reverse_chain_is_the_mirror_image PASSED     [ 55%]
+tests/test_smoke.py::test_config_file_exists PASSED                      [ 55%]
+tests/test_smoke.py::test_config_top_level_sections PASSED               [ 56%]
+tests/test_smoke.py::test_cost_weights_sum_to_one PASSED                 [ 57%]
+tests/test_smoke.py::test_improvement_ratio_is_a_real_hysteresis PASSED  [ 58%]
+tests/test_smoke.py::test_cooldown_dwell_and_sample_interval_are_positive PASSED [ 58%]
+tests/test_smoke.py::test_ml_window_and_horizon_are_consistent PASSED    [ 59%]
+tests/test_smoke.py::test_ml_sample_interval_matches_telemetry PASSED    [ 60%]
+tests/test_smoke.py::test_routing_mode_is_valid PASSED                   [ 61%]
+tests/test_smoke.py::test_congestion_thresholds_are_ordered PASSED       [ 61%]
+tests/test_smoke.py::test_peak_traffic_exceeds_link_capacity PASSED      [ 62%]
+tests/test_smoke.py::test_requirements_are_fully_pinned PASSED           [ 63%]
+tests/test_smoke.py::test_ryu_and_eventlet_are_pinned_to_the_spec PASSED [ 63%]
+tests/test_smoke.py::test_python_39_is_required_by_the_pins PASSED       [ 64%]
+tests/test_smoke.py::test_makefile_declares_p1_targets PASSED            [ 65%]
+tests/test_telemetry_p5.py::test_diff_with_wrap_monotonic_increment PASSED [ 66%]
+tests/test_telemetry_p5.py::test_diff_with_wrap_64bit_overflow PASSED    [ 66%]
+tests/test_telemetry_p5.py::test_diff_with_wrap_counter_reset_does_not_spike PASSED [ 67%]
+tests/test_telemetry_p5.py::test_rate_computation_over_actual_dt PASSED  [ 68%]
+tests/test_telemetry_p5.py::test_directional_link_utilization PASSED     [ 69%]
+tests/test_telemetry_p5.py::test_probe_serialization_and_parsing PASSED  [ 69%]
+tests/test_telemetry_p5.py::test_probe_corrupt_data_returns_none PASSED  [ 70%]
+tests/test_telemetry_p5.py::test_probe_tracker_latency_and_loss PASSED   [ 71%]
+tests/test_telemetry_p5.py::test_composite_loss_and_congestion_trigger PASSED [ 72%]
+tests/test_telemetry_p5.py::test_staleness_and_stall_timeout PASSED      [ 72%]
+tests/test_telemetry_p5.py::test_csv_export_format_and_schema PASSED     [ 73%]
+tests/test_topology.py::test_spec_matches_the_described_shape PASSED     [ 74%]
+tests/test_topology.py::test_every_link_is_shaped_from_config PASSED     [ 75%]
+tests/test_topology.py::test_bw_delay_and_queue_are_configurable PASSED  [ 75%]
+tests/test_topology.py::test_per_link_overrides_are_honoured PASSED      [ 76%]
+tests/test_topology.py::test_duplicate_links_are_rejected PASSED         [ 77%]
+tests/test_topology.py::test_unknown_switch_is_rejected PASSED           [ 77%]
+tests/test_topology.py::test_insufficient_switch_ports_is_rejected PASSED [ 78%]
+tests/test_topology.py::test_switch_graph_has_exactly_one_cycle PASSED   [ 79%]
+tests/test_topology.py::test_graph_carries_link_capacity PASSED          [ 80%]
+tests/test_topology.py::test_exactly_two_h1_to_h4_paths PASSED           [ 80%]
+tests/test_topology.py::test_paths_are_identical_in_delay_so_ordering_is_deterministic PASSED [ 81%]
+tests/test_topology.py::test_k_shortest_respects_k PASSED                [ 82%]
+tests/test_topology.py::test_expected_rtt_is_double_the_one_way_sum PASSED [ 83%]
+tests/test_topology.py::test_bottleneck_bandwidth_is_the_minimum_hop PASSED [ 83%]
+tests/test_topology.py::test_inter_switch_link_extraction PASSED         [ 84%]
+tests/test_topology.py::test_unknown_weight_is_rejected PASSED           [ 85%]
+tests/test_topology.py::test_flow_plan_for_path_a PASSED                 [ 86%]
+tests/test_topology.py::test_flow_plan_for_path_b PASSED                 [ 86%]
+tests/test_topology.py::test_flow_plan_unidirectional_halves_the_rules PASSED [ 87%]
+tests/test_topology.py::test_flow_renders_as_ovs_ofctl_string PASSED     [ 88%]
+tests/test_topology.py::test_degenerate_path_is_rejected PASSED          [ 88%]
+tests/test_topology.py::test_each_path_produces_distinct_rule_sets PASSED [ 89%]
+tests/test_topology.py::test_unknown_neighbour_port_is_a_clear_error PASSED [ 90%]
+tests/test_topology_p4.py::test_topology_graph_nodes_and_edges PASSED    [ 91%]
+tests/test_topology_p4.py::test_topology_link_capacities PASSED          [ 91%]
+tests/test_topology_p4.py::test_k_shortest_paths_finds_both_diamond_paths PASSED [ 92%]
+tests/test_topology_p4.py::test_k_shortest_respects_limit PASSED         [ 93%]
+tests/test_topology_p4.py::test_expected_rtt_and_bottleneck PASSED       [ 94%]
+tests/test_topology_p4.py::test_weight_metrics PASSED                    [ 94%]
+tests/test_topology_p4.py::test_k_shortest_fewer_paths_than_k_does_not_crash PASSED [ 95%]
+tests/test_topology_p4.py::test_asymmetric_metrics_produce_different_best_paths PASSED [ 96%]
+tests/test_topology_p4.py::test_dynamic_link_failure_rerouting PASSED    [ 97%]
+tests/test_topology_p4.py::test_switch_removal PASSED                    [ 97%]
+tests/test_topology_p4.py::test_portmap_queries_and_export PASSED        [ 98%]
+tests/test_topology_p4.py::test_lldp_packet_roundtrip PASSED             [ 99%]
+tests/test_topology_p4.py::test_lldp_parse_non_lldp_returns_none PASSED  [100%]
+
+============================= 136 passed in 1.17s ==============================
+.venv/bin/python scripts/verify_p6.py --out results/p6_dataset.json
+==============================================================================
+AI-Driven SDN: Phase 6 Acceptance Test (Traffic & Labeled Dataset)
+==============================================================================
+
+------------------------------------------------------------------------------
+[1. Traffic Pattern Generation & Peak Loads]
+------------------------------------------------------------------------------
+  [PASS] 5 configured patterns present in generator (patterns=['ramp', 'bursty_onoff', 'poisson', 'tcp_udp_mix', 'elephant_mice'])
+  [PASS] pattern 'ramp' exceeds link bottleneck (10 Mbps) (min=1.8 Mbps, max=11.5 Mbps)
+  [PASS] pattern 'bursty_onoff' exceeds link bottleneck (10 Mbps) (min=1.8 Mbps, max=11.6 Mbps)
+  [PASS] pattern 'poisson' exceeds link bottleneck (10 Mbps) (min=3.2 Mbps, max=12.4 Mbps)
+  [PASS] pattern 'tcp_udp_mix' exceeds link bottleneck (10 Mbps) (min=8.5 Mbps, max=14.7 Mbps)
+  [PASS] pattern 'elephant_mice' exceeds link bottleneck (10 Mbps) (min=6.7 Mbps, max=14.0 Mbps)
+  [PASS] seed reproducibility verified across instances (rate=8.12 Mbps)
+
+------------------------------------------------------------------------------
+[2. Strict Future Congestion Labeling & Leakage Prevention]
+------------------------------------------------------------------------------
+  [PASS] future congestion in horizon produces label=1
+  [PASS] lead time accurately calculated as 12.0 s (lead_time=12.0 s)
+  [PASS] zero leakage: present-only congestion does NOT label t=0 as future-congested (is_cong=True, label=0)
+  [PASS] tail sample flagged as horizon_valid=False
+
+------------------------------------------------------------------------------
+[3. Dataset Collection & Class Balance Analysis]
+------------------------------------------------------------------------------
+  [PASS] collected total dataset >= 2000 samples (total=2400)
+  [PASS] valid horizon samples >= 1800 (valid=1960)
+  [PASS] dataset is balanced (positive ratio between 25% and 60%) (positive_ratio=46.0%, negative_ratio=54.0%)
+  [PASS] pattern 'ramp' has both positive and negative classes (pos=118, neg=274 (30.1% pos))
+  [PASS] pattern 'bursty_onoff' has both positive and negative classes (pos=196, neg=196 (50.0% pos))
+  [PASS] pattern 'poisson' has both positive and negative classes (pos=196, neg=196 (50.0% pos))
+  [PASS] pattern 'tcp_udp_mix' has both positive and negative classes (pos=196, neg=196 (50.0% pos))
+  [PASS] pattern 'elephant_mice' has both positive and negative classes (pos=196, neg=196 (50.0% pos))
+  [PASS] lead time distribution is positive with valid mean (mean=4.98 s, min=2.0 s, max=22.0 s)
+
+------------------------------------------------------------------------------
+[4. CSV Export & Schema Conformance]
+------------------------------------------------------------------------------
+  [PASS] data/telemetry_labeled.csv created
+  [PASS] data/telemetry.csv created
+  [PASS] labeled CSV fieldnames match LABELED_FIELDNAMES
+  [PASS] labeled CSV contains all samples
+
+==============================================================================
+SUMMARY: 24 passed, 0 failed
+==============================================================================
+
+Class Distribution Report:
+  Pattern          Total    Positive   Negative   Pos Ratio 
+  ------------------------------------------------------
+  ramp             392      118        274          30.1%
+  bursty_onoff     392      196        196          50.0%
+  poisson          392      196        196          50.0%
+  tcp_udp_mix      392      196        196          50.0%
+  elephant_mice    392      196        196          50.0%
+  ------------------------------------------------------
+  OVERALL          1960     902        1058         46.0%
+

@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.config import Config, load_config
 from common.logging_utils import setup_logging
+from common.proc import check_required_tools, mn_clean, venv_bin
 from topology.multipath_topology import (
     FlowRule,
     MultipathTopology,
@@ -53,6 +54,25 @@ from topology.multipath_topology import (
 LOGGER = None  # assigned in main()
 HR = "=" * 78
 THIN = "-" * 78
+
+
+def preflight(config: Any) -> bool:
+    """Validate tools and configuration before starting test execution."""
+    print(f"\n{THIN}\n[Preflight System Verification]\n{THIN}")
+    tools = ("mn", "ovs-vsctl", "ovs-ofctl", "iperf3")
+    found_tools = check_required_tools(tools)
+    all_tools_ok = True
+    for t in tools:
+        path = found_tools.get(t)
+        if path:
+            print(f"  [TOOL] {t:<12} -> {path}")
+        else:
+            print(f"  [TOOL] {t:<12} -> MISSING", file=sys.stderr)
+            all_tools_ok = False
+
+    req_keys = ["topology.switches", "topology.links"]
+    cfg_ok = all(config.get(k) is not None for k in req_keys)
+    return all_tools_ok and cfg_ok
 
 PASSED = 0
 FAILED = 0
@@ -135,7 +155,8 @@ class IperfResult:
 
     direction: str
     seconds: float
-    bits_per_second: float
+    sender_mbps: float
+    receiver_mbps: float
     mbps: float
     retransmits: Optional[int]
 
@@ -144,25 +165,22 @@ def measure_iperf(
     client: Any, server: Any, server_ip: str, seconds: int, reverse: bool,
     udp: bool = False,
 ) -> IperfResult:
-    """Run iperf3 TCP from ``client`` to ``server`` and parse the JSON output.
-
-    The server runs as a daemon on the remote host and is stopped afterwards so
-    repeated measurements do not collide on the port.
-    """
+    """Run iperf3 TCP from ``client`` to ``server`` with -O 2 and parse output."""
     port = 5201
-    server.cmd("pkill -f 'iperf3 -s' 2>/dev/null; true")
+    iperf = venv_bin("iperf3")
+    server.cmd(f"pkill -f '{iperf} -s' 2>/dev/null; true")
     time.sleep(0.3)
-    server.cmd(f"iperf3 -s -p {port} -D")
+    server.cmd(f"{iperf} -s -p {port} -D")
     time.sleep(0.7)
 
     direction = "reverse" if reverse else "forward"
     cmd = (
-        f"iperf3 -c {server_ip} -p {port} -t {seconds} -J "
+        f"{iperf} -c {server_ip} -p {port} -t {seconds} -O 2 -J "
         + ("-R " if reverse else "")
         + ("-u -b 10M " if udp else "")
     )
     raw = client.cmd(cmd)
-    server.cmd("pkill -f 'iperf3 -s' 2>/dev/null; true")
+    server.cmd(f"pkill -f '{iperf} -s' 2>/dev/null; true")
 
     if not raw.strip():
         raise RuntimeError(f"iperf3 produced no output ({direction})")
@@ -177,12 +195,19 @@ def measure_iperf(
     end = data["end"]
     sent = end.get("sum_sent") or end.get("sum") or {}
     recv = end.get("sum_received") or end.get("sum") or {}
-    block = sent if sent else recv
+    sender_bps = float(sent.get("bits_per_second", 0.0))
+    receiver_bps = float(recv.get("bits_per_second", 0.0))
+    if not receiver_bps and sender_bps:
+        receiver_bps = sender_bps
+    if not sender_bps and receiver_bps:
+        sender_bps = receiver_bps
+
     return IperfResult(
         direction=direction,
-        seconds=float(block.get("seconds", seconds)),
-        bits_per_second=float(block.get("bits_per_second", 0.0)),
-        mbps=float(block.get("bits_per_second", 0.0)) / 1e6,
+        seconds=float(recv.get("seconds", seconds)),
+        sender_mbps=sender_bps / 1e6,
+        receiver_mbps=receiver_bps / 1e6,
+        mbps=receiver_bps / 1e6,
         retransmits=sent.get("retransmits"),
     )
 
@@ -215,7 +240,7 @@ def leftover_state(baseline_ifaces: Optional[List[str]] = None) -> Dict[str, Any
     def sh(cmd: List[str]) -> str:
         return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
 
-    bridges = sh(["ovs-vsctl", "list-br"]).split()
+    bridges = sh([venv_bin("ovs-vsctl"), "list-br"]).split()
     procs_raw = sh(["ps", "-eo", "args"])
     procs = [
         line.strip()
@@ -353,16 +378,17 @@ def exercise_path(
             measure_iperf(h1, h4, h4_ip, seconds=iperf_seconds, reverse=reverse)
         )
     for r in result.iperf:
-        info(f"{label}: iperf3 {r.direction} = {r.mbps:.2f} Mbps "
-             f"(target {spec.path_bottleneck_bw(path):.1f} Mbps)")
+        info(f"{label}: iperf3 {r.direction} = sender {r.sender_mbps:.2f} Mbps, "
+             f"receiver {r.receiver_mbps:.2f} Mbps (target {spec.path_bottleneck_bw(path):.1f} Mbps)")
 
     target_bw = spec.path_bottleneck_bw(path)
     lower = target_bw * (1.0 - bandwidth_tolerance)
+    upper = 10.30  # Upper bound: <= 10.3 Mbps receiver side
     for r in result.iperf:
         check(f"{label}: iperf3 TCP {r.direction} within "
-              f"{bandwidth_tolerance:.0%} of {target_bw:.0f} Mbps",
-              lower <= r.mbps <= target_bw * 1.15,
-              f"{r.mbps:.2f} Mbps (need >= {lower:.2f})")
+              f"{lower:.1f}-{upper:.1f} Mbps (receiver side)",
+              lower <= r.receiver_mbps <= upper,
+              f"sender={r.sender_mbps:.2f} Mbps, receiver={r.receiver_mbps:.2f} Mbps")
 
     return result
 
@@ -398,6 +424,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--rtt-tolerance", type=float, default=15.0,
                    help="percent error allowed between measured and predicted RTT")
     p.add_argument("--datapath", default=None, choices=("kernel", "netdev"))
+    p.add_argument("--dry-run", action="store_true", help="Perform preflight and import checks without root/Mininet")
     p.add_argument("--out", default=None, help="write a JSON report here")
     return p.parse_args(argv)
 
@@ -407,6 +434,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     config = load_config(args.config)
     LOGGER = setup_logging(config, name="verify.p2")
+
+    if not preflight(config):
+        print("\nPreflight check failed. Aborting.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("\n--dry-run requested: Preflight passed successfully. Exiting.")
+        return 0
 
     if os.geteuid() != 0:
         print("ERROR: this script must run as root (Mininet needs namespaces).",
@@ -460,7 +495,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         h4 = topo.net.get(h4_name)
         info(f"switches up: {', '.join(sorted(spec.switches))}")
         info(f"hosts up    : {', '.join(sorted(spec.hosts))}")
-        bridges = subprocess.run(["ovs-vsctl", "list-br"], capture_output=True,
+        bridges = subprocess.run([venv_bin("ovs-vsctl"), "list-br"], capture_output=True,
                                  text=True).stdout.split()
         check("all 4 OVS bridges present", len(bridges) == 4, f"bridges={sorted(bridges)}")
 
@@ -499,13 +534,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             topo.stop()
         except Exception as exc:  # pragma: no cover - best effort
             bad(f"Mininet stop raised {exc!r}")
-        # `mn -c` is exactly what the user asked for: full Mininet cleanup.
-        mn_bin = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "mn")
-        print(f"  ....   running `{mn_bin} -c` (full Mininet cleanup)")
-        cleanup_proc = subprocess.run(
-            [mn_bin, "-c"], capture_output=True, text=True, check=False
-        )
-        info(f"mn -c rc={cleanup_proc.returncode}")
+        mn_clean()
         time.sleep(2.0)
 
         state = leftover_state(baseline_ifaces)
@@ -528,14 +557,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ------------------------------------------------------------- report ---
     section("5. Summary")
     print(f"  {'path':<26} {'method':<14} {'loss%':>6} "
-          f"{'rtt ms':>8} {'pred ms':>8} {'fwd Mbps':>9} {'rev Mbps':>9}")
+          f"{'rtt ms':>8} {'pred ms':>8} {'fwd sender':>11} {'fwd recv':>10} {'rev sender':>11} {'rev recv':>10}")
     for r in results:
-        fwd = next((i.mbps for i in r.iperf if i.direction == "forward"), float("nan"))
-        rev = next((i.mbps for i in r.iperf if i.direction == "reverse"), float("nan"))
-        print(f"  {r.label:<26} {r.isolate_method:<14} "
-              f"{r.ping.loss_pct if r.ping else float('nan'):>6.1f} "
-              f"{r.ping.rtt_avg_ms if r.ping else float('nan'):>8.2f} "
-              f"{r.predicted_rtt_ms:>8.2f} {fwd:>9.2f} {rev:>9.2f}")
+        fwd = next((i for i in r.iperf if i.direction == "forward"), None)
+        rev = next((i for i in r.iperf if i.direction == "reverse"), None)
+        fwd_s = f"{fwd.sender_mbps:.2f}" if fwd else "-"
+        fwd_r = f"{fwd.receiver_mbps:.2f}" if fwd else "-"
+        rev_s = f"{rev.sender_mbps:.2f}" if rev else "-"
+        rev_r = f"{rev.receiver_mbps:.2f}" if rev else "-"
+        ping_s = f"{r.ping.rtt_avg_ms:.2f}" if r.ping else "-"
+        loss_s = f"{r.ping.loss_pct:.1f}" if r.ping else "-"
+        print(f"  {r.label:<26} {r.isolate_method:<14} {loss_s:>6} "
+              f"{ping_s:>8} {r.predicted_rtt_ms:>8.2f} "
+              f"{fwd_s:>11} {fwd_r:>10} {rev_s:>11} {rev_r:>10}")
 
     print(f"\n{THIN}\nSUMMARY: {PASSED} passed, {FAILED} failed\n{THIN}")
     if args.out:

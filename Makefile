@@ -7,7 +7,8 @@ SHELL      := /bin/bash
 VENV       ?= .venv
 PY         := $(VENV)/bin/python
 PIP        := $(VENV)/bin/pip
-MN         := sudo $(VENV)/bin/mn
+SUDO_ENV   := sudo env "PATH=$(CURDIR)/$(VENV)/bin:$$PATH"
+MN         := $(SUDO_ENV) $(VENV)/bin/mn
 MN_        := $(VENV)/bin/mn
 RYU        := $(VENV)/bin/ryu-manager
 CONFIG     ?= config.yaml
@@ -76,16 +77,16 @@ mn-clean: ## Tear down any leftover mininet state (needs root)
 # P12 -- API + dashboard
 # -----------------------------------------------------------------------------
 api: ## P12 -- run the FastAPI (add sudo to read OpenFlow tables)
-	$(PY) -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+	$(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
 
 api-sudo: ## P12 -- run the API with OpenFlow read access
-	sudo $(PY) -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+	sudo $(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
 
 dashboard: ## P12 -- run the React dev server against the API
-	cd dashboard/react-app && npm run dev
+	cd future/dashboard/react-app && npm run dev
 
 dashboard-install: ## P12 -- install dashboard dependencies
-	cd dashboard/react-app && npm install
+	cd future/dashboard/react-app && npm install
 
 verify-p12: ## P12 acceptance: auth, endpoints, websocket, dashboard build
 	bash scripts/verify_p12.sh
@@ -97,13 +98,13 @@ verify-p12: ## P12 acceptance: auth, endpoints, websocket, dashboard build
 # P2 -- multipath topology
 # -----------------------------------------------------------------------------
 topo: ## P2 -- build the diamond topology and block (needs root)
-	sudo $(PY) -m topology.multipath_topology --topo-only
+	$(SUDO_ENV) $(PY) -m topology.multipath_topology --topo-only
 
 topo-graph: ## P2 -- print the topology + all h1->h4 paths (no root needed)
 	$(PY) -m topology.multipath_topology --paths h1 h4
 
 verify-p2: ## P2 acceptance: both paths in isolation (needs root)
-	sudo $(PY) scripts/verify_p2.py --out results/p2_topology.json
+	$(SUDO_ENV) $(PY) scripts/verify_p2.py --out results/p2_topology.json
 
 # -----------------------------------------------------------------------------
 # P3 -- loop-safe controller
@@ -113,10 +114,10 @@ controller: ## P3 -- run ryu-manager with our loop-safe controller (needs data/p
 		controller.sdn_controller
 
 verify-p3: ## P3 acceptance: pingall, no storm, flows, throughput, restart (needs root)
-	sudo $(PY) scripts/verify_p3.py --out results/p3_controller.json
+	$(SUDO_ENV) $(PY) scripts/verify_p3.py --out results/p3_controller.json
 
 portmap: ## P3 -- dump switch/host port adjacency to data/portmap.json (needs root)
-	sudo $(PY) -m topology.multipath_topology --dump-portmap data/portmap.json
+	$(SUDO_ENV) $(PY) -m topology.multipath_topology --dump-portmap data/portmap.json
 # -----------------------------------------------------------------------------
 # P4 -- topology discovery
 # -----------------------------------------------------------------------------
@@ -127,13 +128,35 @@ verify-p4: ## P4 acceptance: NetworkX graph, capacities, k-shortest paths, LLDP
 	$(PY) scripts/verify_p4.py --out results/p4_topology.json
 
 verify-p4-live: ## P4 acceptance (live, needs root): Mininet + Ryu real LLDP discovery & link failure
-	sudo $(PY) scripts/verify_p4_live.py --out results/p4_live.json
+	$(SUDO_ENV) $(PY) scripts/verify_p4_live.py --out results/p4_live.json
 
 # -----------------------------------------------------------------------------
-# Later phases -- declared now so the interface is stable, implemented per phase.
+# P5 -- telemetry & active probes
 # -----------------------------------------------------------------------------
-dataset:     ## P6 -- generate the labelled telemetry dataset
-	@echo "P6 (dataset): not implemented yet -- say 'start P6'"
+verify-p5: ## P5 acceptance: rate calculation, wrap/reset, active probes, CSV (no root needed)
+	$(PY) scripts/verify_p5.py --out results/p5_telemetry.json
+
+verify-p5-live: ## P5 acceptance (live, needs root): Mininet + Ryu + iperf3 rates & latency under load
+	$(SUDO_ENV) $(PY) scripts/verify_p5_live.py --out results/p5_live.json
+
+# -----------------------------------------------------------------------------
+# P6 -- dataset generation
+# -----------------------------------------------------------------------------
+dataset: verify-p6 ## P6 -- generate the labelled telemetry dataset
+dataset-smoke: ## P6 quick smoke collection (needs root): 1 run per pattern, 30s, writes to data/smoke/
+	$(SUDO_ENV) $(PY) ml/collect_dataset.py --smoke
+
+dataset-live: ## P6 full live data collection (needs root): 10 runs per pattern, 90s, writes to data/
+	$(SUDO_ENV) $(PY) ml/collect_dataset.py --live --runs-per-pattern 10 --duration 90
+
+check-dataset: ## P6 quality check: validate live dataset integrity
+	$(PY) scripts/check_live_dataset.py --csv data/telemetry_live_labeled.csv
+
+check-smoke: ## P6 quality check: validate smoke dataset integrity
+	$(PY) scripts/check_live_dataset.py --csv data/smoke/telemetry_live_labeled.csv
+
+verify-p6: ## P6 acceptance: traffic patterns, future labeling, balanced dataset
+	$(PY) scripts/verify_p6.py --out results/p6_dataset.json
 train:       ## P7 -- train + evaluate the congestion predictor
 	@echo "P7 (train): not implemented yet -- say 'start P7'"
 experiments: ## P10 -- 4 modes x scenarios x repetitions
