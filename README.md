@@ -82,6 +82,51 @@ kept growing past 79 KB for the full 90 s of each run.
 file never applies back-pressure, so the child cannot block — and the log is
 kept for diagnosis, which `DEVNULL` would not allow.
 
+### A second silent failure: offered load that never arrived
+
+The same shape of bug appeared again, in the traffic generator.
+
+The `ramp` pattern is meant to climb 2 → 12 Mbps and fall back. It produced a
+**square wave**: load switched from idle to saturated inside a single 2 s sample,
+then returned to zero.
+
+```
+before:  0, 1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 2, 6, 6, 6, 6, 4, 0, 0, ...
+after:   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 10, ...
+```
+
+Largest single-sample jump: **7.4 Mbps → 1.2 Mbps.**
+
+This mattered more than it looks. When load switches on like a light switch
+there is **nothing to predict**, so the congestion model could only ever react —
+which is why the trained model warned 2 seconds ahead and missed 80% of
+episodes. The accuracy figure was measuring an easy problem.
+
+**Root cause, found by instrumenting rather than guessing:** `iperf3` servers do
+not survive Mininet's command shell. Started with `-D` the daemon dies when the
+shell is torn down; plainly backgrounded with `&` it also did not survive. `ps`
+on the host showed no server, `ss -ltn` showed no listening socket, and every
+client connected to nothing — producing 0.0 Mbps **with no error anywhere**.
+
+The pre-existing code was accidentally immune: it called `killall` with the full
+binary path, which matches no process name and kills nothing, so its servers were
+never disturbed.
+
+**Fix:** one server, one long-lived client offering well above any step, and
+**`tc` shapes the host's egress** to follow the profile. That is the smallest
+arrangement of processes that can work, and it removes the dependence on process
+lifetime entirely.
+
+**Guards so this cannot recur silently:**
+- a bind check that raises *with iperf3's own output* rather than letting a run
+  produce zero traffic
+- the collector prints the **rate profile itself** on a passing verdict — the
+  verdict says a shape was acceptable; the profile is what lets a reader confirm
+  it by eye, which is how the original defect was caught
+- `ml/validate.py` asserts, per run, that the load never returns to idle after
+  reaching peak, reaches its configured peak, and has no step exceeding a
+  declared fraction of it
+
 **Guards** (`tests/test_process_drain.py`): writes 4 MiB through the sink and
 asserts it completes; demonstrates that the *undrained* arrangement does block;
 and a static check fails the build if any script spawns the controller into an

@@ -230,40 +230,62 @@ Two unavoidable consequences on a real fabric:
 2. **Each flow exits when its own `-t` expires.** If the next step starts even
    slightly late, there is a gap at zero — which is exactly the square wave.
 
-### 5.3 The fix (implemented, not yet verified against a fabric)
+### 5.3 The fix — verified on a live fabric
 
-Load is now delivered as **overlapping long-lived flows whose aggregate follows
-the profile**. Each flow is started once and never re-launched; adding a flow
-raises the rate, letting one expire lowers it, and nothing in between drops to
-zero.
+The first two attempts were wrong in ways only a live run could reveal. Both are
+recorded because the reasoning is the point.
 
-The unit of load is 2 Mbps. Unit *i* starts at the first step needing more than
-*i* units and expires at the last step still needing it:
+**Attempt 1 — overlapping long-lived `iperf3` flows, one per 2 Mbps unit.**
+Arithmetically correct, and writing tests against its schedule exposed two bugs
+of my own: giving each unit a *single* interval pinned a repeating profile at
+peak across every cycle after the first, and a `max(1, ...)` clamp made an idle
+phase *arithmetically impossible* — so `bursty_onoff`, which is supposed to fall
+to zero, could not have used it without being silently flattened.
 
-```
-ScheduledFlow(start_s=0.0,  port=5201, rate=2.0, life=110s)
-ScheduledFlow(start_s=10.0, port=5202, rate=2.0, life=90s)
-ScheduledFlow(start_s=20.0, port=5203, rate=2.0, life=70s)
-ScheduledFlow(start_s=30.0, port=5204, rate=2.0, life=50s)
-ScheduledFlow(start_s=40.0, port=5205, rate=2.0, life=30s)
-ScheduledFlow(start_s=50.0, port=5206, rate=2.0, life=10s)
-```
+**Attempt 2 — the same, run unbuffered with diagnostics.** Every run produced
+**0.0 Mbps and no error anywhere.** Instrumenting it found the cause:
 
-Resulting aggregate — continuous, symmetric, never zero:
+> **`iperf3` servers do not survive Mininet's command shell.** Started with `-D`
+> the daemon dies when the shell is torn down; plainly backgrounded with `&` it
+> also did not survive. `ps` on the host showed no server, `ss -ltn` showed no
+> listening socket, and every client connected to nothing.
 
-| t (s) | 0 | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 | 100 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Mbps | 2 | 4 | 6 | 8 | 10 | **12** | 10 | 8 | 6 | 4 | 2 |
+The pre-existing code had been *accidentally immune*: it called `killall` with
+the full binary path, which matches no process name and kills nothing, so its
+servers were never disturbed. Making the cleanup work is what exposed the
+underlying fragility.
 
-`poisson` was broken the same way and is fixed identically (continuous
-fluctuating background, minimum 2.2 Mbps, never zero). `bursty_onoff` was
-already correct — an on/off square wave is what that pattern is *for* — and is
-left alone.
+**Attempt 3 — one server, one long-lived client, and `tc` shapes the egress.**
+The smallest arrangement of processes that can work, with no dependence on
+process lifetime at all. The client offers well above any step; `tc tbf` trims it
+to follow the profile.
 
-**A secondary change we intend to make:** the collector should *assert the shape
-of the traffic it received*. A "ramp" run whose profile is not monotonic should be
-a failed run, not data to train on. Right now 25 runs of square waves were
-accepted without comment; this was found only by reading raw rates by hand.
+**Verified result:**
+
+| | Before | After |
+|---|---|---|
+| Largest single-sample jump | **7.4 Mbps** | **1.2 Mbps** |
+| Returned to idle after peaking | yes, repeatedly | **no** |
+| Reached configured peak | no (capped at 10) | **yes** |
+| Validator verdict | rejected | **OK** |
+
+Peak reads 10.0 rather than 12.0 Mbps because the link itself saturates at
+10 Mbps — which is precisely what creates congestion.
+
+### 5.4 Guards so this cannot recur silently
+
+- A **bind check** that raises *with iperf3's own output* rather than letting a
+  run produce zero traffic.
+- The collector **prints the rate profile itself** on a passing verdict. The
+  verdict says a shape was acceptable; the profile is what lets a reader confirm
+  it by eye — which is how the original defect was caught.
+- **`ml/validate.py`** asserts, per run, that the load never returns to idle
+  after reaching peak, reaches its configured peak, and contains no step
+  exceeding a declared fraction of it. Its central test uses the *actual*
+  pre-fix profile as the fixture, which must be rejected.
+- Only `ramp` is asserted. `bursty_onoff` is *meant* to be an on/off square wave,
+  and demanding a rise-and-fall everywhere would flag correct behaviour as a
+  defect.
 
 ---
 
