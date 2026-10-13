@@ -48,6 +48,7 @@ on a fallback would be the most misleading outcome this project could produce.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -153,10 +154,26 @@ class LoopConfig:
     #: controller has seen traffic between".
     flows: List[Tuple[str, str]] = field(default_factory=list)
 
+    #: Environment variable that overrides ``routing.mode``.
+    #:
+    #: P10 compares all four modes. Rewriting config.yaml between runs would make
+    #: the mode under test a function of what the previous run happened to leave
+    #: behind, so the experiment harness selects it through the environment
+    #: instead and config.yaml keeps declaring the default.
+    MODE_ENV_VAR = "SDN_ROUTING_MODE"
+
     @classmethod
-    def from_config(cls, config: Any) -> "LoopConfig":
-        """Build from the ``routing``/``telemetry``/``ml`` config sections."""
-        mode = str(config.get("routing.mode", "ml_aware"))
+    def from_config(cls, config: Any, *, mode_override: Optional[str] = None) -> "LoopConfig":
+        """Build from the ``routing``/``telemetry``/``ml`` config sections.
+
+        Parameters
+        ----------
+        mode_override:
+            Forces a routing mode, taking precedence over both
+            ``$SDN_ROUTING_MODE`` and ``routing.mode``.
+        """
+        mode = (mode_override or os.environ.get(cls.MODE_ENV_VAR)
+                or str(config.get("routing.mode", "ml_aware")))
         if mode not in ROUTING_MODES:
             raise RerouteLoopError(
                 f"routing.mode {mode!r} is not one of {ROUTING_MODES}"

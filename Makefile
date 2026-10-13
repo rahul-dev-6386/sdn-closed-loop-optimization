@@ -19,7 +19,9 @@ CONFIG     ?= config.yaml
         topo-discovery verify-p4 verify-p4-live \
         api api-sudo dashboard dashboard-install verify-p12 \
         snapshot snapshot-all snapshot-list \
-        dataset train train-quick verify-p7 experiments figures demo \
+        dataset train train-quick verify-p7 \
+        experiments experiments-dry experiments-resume verify-p10 \
+        figures demo \
         ping check-native mn-clean
 
 help: ## Show this help
@@ -178,8 +180,17 @@ train-quick: ## P7 -- fast sanity training (fewer trees)
 
 verify-p7: ## P7 acceptance: features, leakage guards, model, bundle
 	$(PY) scripts/verify_p7.py --out results/p7_acceptance.json
-experiments: ## P10 -- 4 modes x scenarios x repetitions
-	@echo "P10 (experiments): not implemented yet -- say 'start P10'"
+experiments: ## P10 -- 4 modes x scenarios x repetitions (needs root, long)
+	$(PY) scripts/run_experiments.py
+
+experiments-dry: ## P10 -- print the run plan without touching mininet
+	$(PY) scripts/run_experiments.py --dry-run
+
+experiments-resume: ## P10 -- continue an interrupted sweep, retrying failures
+	$(PY) scripts/run_experiments.py --resume
+
+verify-p10: ## P10 acceptance: experiment CSV schema, mode coverage, no silent gaps
+	$(PY) scripts/verify_p10.py --out results/p10_acceptance.json
 figures:     ## P11 -- comparison tables, box plots, timeline plots
 	@echo "P11 (analysis): not implemented yet -- say 'start P11'"
 demo:        ## P13 -- end-to-end demonstration

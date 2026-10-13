@@ -370,3 +370,23 @@ def test_cooldown_prevents_a_reroute_every_tick() -> None:
         report = loop.tick()
         loop.controller.guard.record("h1->h4", float(tick * 2))
     assert len(loop.applied) < 10 * 4
+
+
+def test_the_mode_can_be_overridden_by_environment(monkeypatch) -> None:
+    """P10 must be able to select a mode without editing config.yaml."""
+    monkeypatch.setenv(LoopConfig.MODE_ENV_VAR, "ecmp")
+    cfg = LoopConfig.from_config(load_config())
+    assert cfg.mode == "ecmp"
+
+
+def test_an_explicit_override_beats_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv(LoopConfig.MODE_ENV_VAR, "ecmp")
+    assert LoopConfig.from_config(load_config(), mode_override="ml_aware").mode \
+        == "ml_aware"
+
+
+def test_an_invalid_environment_mode_is_rejected(monkeypatch) -> None:
+    """A typo in the harness must fail loudly, not silently disable rerouting."""
+    monkeypatch.setenv(LoopConfig.MODE_ENV_VAR, "ml_ware")
+    with pytest.raises(RerouteLoopError, match="not one of"):
+        LoopConfig.from_config(load_config())
