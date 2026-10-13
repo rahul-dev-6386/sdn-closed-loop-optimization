@@ -33,6 +33,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.config import Config, load_config
 from controller.telemetry import CSV_FIELDNAMES
+from ml.validate import (  # noqa: E402
+    DEFAULT_MAX_JUMP_FRACTION,
+    link_rate_series,
+    validate_shape,
+)
 from common.proc import (
     ControllerLog,
     check_required_tools,
@@ -122,6 +127,12 @@ class LiveDatasetCollector:
         self.progress_file = os.path.join(out_dir, "dataset_progress.json")
         self.sample_interval_s = float(self.config.get("telemetry.sample_interval_s", 2.0))
         self.default_duration_s = float(self.config.get("traffic.episode_duration_s", 90.0))
+        # Runs whose measured traffic did not match the pattern that generated
+        # it. Reported at the end of a sweep rather than silently tolerated.
+        self.shape_failures: List[Dict[str, Any]] = []
+        # Patterns with no declared shape, recorded so a sweep can report that
+        # it checked fewer runs than it collected rather than implying coverage.
+        self.shape_unchecked: set = set()
         self.base_rate_mbps = float(self.config.get("traffic.base_rate_mbps", 2.0))
         self.peak_rate_mbps = float(self.config.get("traffic.peak_rate_mbps", 12.0))
         self.telemetry_csv = str(self.config.get("telemetry.csv_path", "data/telemetry.csv"))
@@ -286,6 +297,35 @@ class LiveDatasetCollector:
                     run_rows.append(row_dict)
 
         print(f"    Collected {len(run_rows)} telemetry samples from {run_id}.")
+
+        # 6. Did the traffic we *asked for* resemble the traffic we *got*?
+        #
+        # 25 runs of a defective `ramp` -- square waves instead of ramps -- were
+        # collected, labelled, trained on and reported before anyone noticed.
+        # Every artefact looked plausible; only reading the raw rate profile by
+        # hand revealed it. This check makes that automatic.
+        if run_rows:
+            # Only patterns declared in traffic.shape_assertions are checked.
+            # The rest have legitimately irregular shapes, and asserting a
+            # rise-and-fall on them would flag correct behaviour as a defect.
+            spec = (self.config.get("traffic.shape_assertions", {}) or {}).get(pattern)
+            if spec:
+                verdict = validate_shape(
+                    run_id, pattern, link_rate_series(run_rows),
+                    peak_mbps=float(spec.get("peak_mbps", self.peak_rate_mbps)),
+                    max_jump_fraction=float(
+                        spec.get("max_jump_fraction", DEFAULT_MAX_JUMP_FRACTION)),
+                )
+                if verdict.ok:
+                    print(f"    Shape OK: peak {verdict.peak_mbps:.1f} Mbps, "
+                          f"largest jump {verdict.max_jump_mbps:.1f} Mbps")
+                else:
+                    print(f"    Shape NOT as intended for {run_id}:")
+                    for reason in verdict.reasons:
+                        print(f"      - {reason}")
+                    self.shape_failures.append(verdict.as_dict())
+            else:
+                self.shape_unchecked.append(pattern)
         return run_rows
 
     def collect_live_dataset(

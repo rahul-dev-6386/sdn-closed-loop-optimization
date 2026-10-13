@@ -223,6 +223,20 @@ traffic:
   mice_flows: 4
   base_rate_mbps: 2.0
   peak_rate_mbps: 12.0      # deliberately exceeds the 10 Mbps link -> congestion
+  # Patterns whose offered load has an assertable shape, and the peak it must
+  # reach. The collector validates every run against this after collecting it, so
+  # a generator that silently stops producing its pattern fails loudly instead of
+  # yielding a plausible-looking dataset.
+  #
+  # Only `ramp` is declared. The others have legitimately irregular shapes --
+  # bursty_onoff is meant to be an on/off square wave, elephant_mice is a
+  # continuous elephant plus random mice, tcp_udp_mix combines a fixed UDP load
+  # with an oscillating TCP one -- so asserting a rise-and-fall on them would
+  # flag correct behaviour as a defect.
+  shape_assertions:
+    ramp:
+      peak_mbps: 12.0
+      max_jump_fraction: 0.35
   ramp_step_s: 10
   on_phase_s: 30
   off_phase_s: 20
