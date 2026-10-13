@@ -222,6 +222,145 @@ class SimulatedLinkFixtureForUnitTests:
 LinkSimulator = SimulatedLinkFixtureForUnitTests
 
 
+@dataclass(frozen=True)
+class ScheduledFlow:
+    """One iperf3 flow: when it starts, which port, how fast, how long."""
+
+    start_s: float
+    port: int
+    rate_mbps: float
+    life_s: float
+
+
+def ramp_plan(
+    profile: Sequence[float],
+    step_s: float,
+    duration_s: float,
+    unit_mbps: float,
+) -> List["ScheduledFlow"]:
+    """Turn a per-step rate profile into overlapping long-lived iperf3 flows.
+
+    The problem this solves
+    -----------------------
+    The obvious implementation starts one iperf3 per step at that step's rate,
+    sleeps, and repeats. On a real fabric that does not produce a ramp at all: it
+    produces isolated bursts separated by idle gaps. Two reasons, both
+    unavoidable:
+
+    * Mininet's ``node.cmd()`` costs several seconds (it spawns a shell and a
+      pty), so steps are skipped entirely -- a profile of 2,4,6,8,10,12 arrived
+      at the switches as 2,6,10.
+    * Each flow runs for its own ``-t`` and then exits, so if the next step's
+      start is delayed even slightly there is a gap at zero.
+
+    The aggregate of several concurrent flows, on the other hand, can hold any
+    shape: adding a flow raises the rate, letting one expire lowers it, and
+    nothing in between ever drops to zero.
+
+    Algorithm
+    ---------
+    Split the profile into units of ``unit_mbps``. Unit ``i`` is started at the
+    first step that needs more than ``i`` units and expires at the last step that
+    still needs it, so the sum of live flows equals the requested rate
+    throughout. Each unit therefore gets exactly one flow with a computed
+    lifetime, and every flow is started once and never re-launched.
+
+    Parameters
+    ----------
+    profile:
+        Per-step offered rates in Mbps. Need not reach zero and need not be
+        monotonic in either direction.
+    step_s:
+        Duration of one step.
+    duration_s:
+        Total run duration; the profile is cycled to fill it.
+    unit_mbps:
+        Granularity. Each flow carries this rate, so smaller units give a finer
+        approximation of the profile.
+
+    Returns
+    -------
+    list of ScheduledFlow
+        One entry per flow, carrying its own lifetime.
+
+    Notes
+    -----
+    Ports are handed out from 5201 upward. The caller must run one iperf3 server
+    per port used, and must not reuse a port across flows -- a lingering flow on
+    a port would silently add its rate to whatever else uses it.
+    """
+    n_steps = max(1, int(round(duration_s / step_s)))
+    rates = [float(profile[k % len(profile)]) for k in range(n_steps)]
+    needs = [max(1, int(round(r / unit_mbps))) for r in rates]
+
+    # For each unit, the first and last step at which it is required.
+    first_step: Dict[int, int] = {}
+    last_step: Dict[int, int] = {}
+    for step, count in enumerate(needs):
+        for unit in range(count):
+            first_step.setdefault(unit, step)
+            last_step[unit] = step
+
+    flows: List["ScheduledFlow"] = []
+    for unit in sorted(first_step):
+        start_s = first_step[unit] * step_s
+        life_steps = last_step[unit] - first_step[unit] + 1
+        life_s = min(life_steps * step_s, duration_s - start_s)
+        if life_s <= 0:
+            continue
+        flows.append(ScheduledFlow(
+            start_s=start_s, port=5201 + unit, rate_mbps=unit_mbps,
+            life_s=life_s,
+        ))
+    return flows
+
+
+def run_profiled_load_on_hosts(
+    net: Any,
+    profile: Sequence[float],
+    duration_s: float,
+    step_s: float,
+    unit_mbps: float = 2.0,
+) -> List[Dict[str, Any]]:
+    """Offer a continuous, step-varying load as overlapping iperf3 flows.
+
+    Returns a small schedule describing what was launched, so a caller (or an
+    acceptance test) can assert the *intended* shape even before any telemetry
+    arrives.
+    """
+    h1 = net.get("h1")
+    h4 = net.get("h4")
+    iperf = venv_bin("iperf3")
+
+    flows = ramp_plan(profile, step_s, duration_s, unit_mbps)
+    ports = sorted({flow.port for flow in flows})
+
+    h4.cmd(f"killall -9 {iperf} 2>/dev/null; true")
+    for port in ports:
+        h4.cmd(f"{iperf} -s -D -p {port}")
+    h1.cmd(f"killall -9 {iperf} 2>/dev/null; true")
+    time.sleep(0.5)
+
+    scheduled: List[Dict[str, Any]] = []
+    started = 0.0
+    for flow in sorted(flows, key=lambda f: f.start_s):
+        delay = flow.start_s - started
+        if delay > 0:
+            time.sleep(delay)
+        started = flow.start_s
+        h1.cmd(
+            f"{iperf} -u -c 10.0.0.4 -b {flow.rate_mbps}M "
+            f"-t {max(1, int(round(flow.life_s)))} "
+            f"-p {flow.port} >/dev/null 2>&1 &"
+        )
+        scheduled.append(asdict(flow))
+    # Absorb the tail of the run so the caller does not have to.
+    tail = duration_s - started
+    if tail > 0:
+        time.sleep(tail)
+    return scheduled
+
+
 def run_live_pattern_on_hosts(
     net: Any,
     pattern: str,
@@ -245,17 +384,26 @@ def run_live_pattern_on_hosts(
     rng = random.Random(seed)
 
     if pattern == "ramp":
-        # Step through rates every 10s: 2, 4, 6, 8, 10, 12, 10, 8, 6, 4...
-        elapsed = 0.0
-        rates = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 10.0, 8.0, 6.0, 4.0, 2.0]
-        step_idx = 0
-        while elapsed < duration_s:
-            rate = rates[step_idx % len(rates)]
-            step_dur = min(10.0, duration_s - elapsed)
-            h1.cmd(f"{iperf} -u -c 10.0.0.4 -b {rate}M -t {int(step_dur)} -p 5201 >/dev/null 2>&1 &")
-            time_sleep(step_dur)
-            elapsed += step_dur
-            step_idx += 1
+        # A true monotonic ramp, delivered as overlapping long-lived flows.
+        #
+        # The previous version started one iperf3 per step at that step's rate.
+        # On a real fabric that is not a ramp: Mininet's node.cmd() costs several
+        # seconds, so whole steps were skipped (a profile of 2,4,6,8,10,12
+        # arrived at the switches as 2,6,10) and each flow exited before the
+        # next began, leaving idle gaps. Measured link rate oscillated between
+        # zero and a handful of discrete levels.
+        #
+        # That matters beyond aesthetics: with load stepping from idle to
+        # saturated inside one 2 s sample there is nothing to predict, so the
+        # congestion model could only ever react. The aggregate of concurrent
+        # flows holds any shape and never drops to zero.
+        ramp_profile = [2.0, 4.0, 6.0, 8.0, 10.0, peak_rate_mbps, 10.0, 8.0,
+                        6.0, 4.0, 2.0]
+        run_profiled_load_on_hosts(
+            net, ramp_profile, duration_s=duration_s, step_s=10.0,
+            unit_mbps=2.0,
+        )
+        return
 
     elif pattern == "bursty_onoff":
         # Alternating 30s on at 12M, 20s off at 2M
@@ -273,6 +421,30 @@ def run_live_pattern_on_hosts(
             elapsed += off_dur
 
     elif pattern == "poisson":
+        # Stochastic arrivals rendered as a continuous load. The previous
+        # per-step implementation produced the same square wave as `ramp`:
+        # discrete bursts separated by idle gaps, rather than the fluctuating
+        # background load the pattern is meant to represent.
+        # Generated here rather than via TrafficProfile so the live path and the
+        # offline planner cannot drift apart: both read the same PRNG stream.
+        poisson_rng = random.Random(seed)
+        steps = max(2, int(round(duration_s / 5.0)))
+        poisson_profile: List[float] = []
+        for _ in range(steps):
+            # A background load that fluctuates, occasionally spiking. Every
+            # step is non-zero, which is the whole point: an idle gap is not
+            # "stochastic arrival", it is a bug in the load generator.
+            rate = poisson_rng.uniform(base_rate_mbps, peak_rate_mbps * 0.6)
+            if poisson_rng.random() < 0.25:
+                rate = poisson_rng.uniform(peak_rate_mbps * 0.6, peak_rate_mbps)
+            poisson_profile.append(round(max(base_rate_mbps, rate), 1))
+        run_profiled_load_on_hosts(
+            net, poisson_profile, duration_s=duration_s, step_s=5.0,
+            unit_mbps=1.0,
+        )
+        return
+
+    elif pattern == "_legacy_poisson":
         # Stochastic arrivals with periodic bursts
         elapsed = 0.0
         while elapsed < duration_s:
