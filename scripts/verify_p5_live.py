@@ -157,13 +157,21 @@ def main() -> int:
     env = os.environ.copy()
     env["PYTHONPATH"] = "."
 
+    # Drained to a file. An unread PIPE blocks the controller once its ~64 KiB
+    # buffer fills, which silently stops telemetry -- the very thing this script
+    # measures. See common.proc.ControllerLog.
+    log_sink = controller_log("verify_p5_live")
+    log_handle = ControllerLog(log_sink)
+    log_fd = log_handle.__enter__()
+    print(f"  controller log -> {log_sink}")
     ryu_proc = subprocess.Popen(
         ryu_cmd,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_fd,
+        stderr=log_fd,
         preexec_fn=os.setsid,
     )
+    log_handle.__exit__()  # our copy; the child holds its own
 
     topo = None
     try:

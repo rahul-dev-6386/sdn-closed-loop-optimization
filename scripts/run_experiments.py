@@ -50,7 +50,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from common.config import load_config  # noqa: E402
-from common.proc import mn_clean, venv_bin  # noqa: E402
+from common.proc import (  # noqa: E402
+    ControllerLog,
+    controller_log,
+    mn_clean,
+    venv_bin,
+)
 from controller.reroute_loop import LoopConfig, ROUTING_MODES  # noqa: E402
 from experiments.stats import (  # noqa: E402
     RunMetrics,
@@ -367,12 +372,19 @@ class ExperimentRunner:
         env = os.environ.copy()
         env["PYTHONPATH"] = "."
         env[LoopConfig.MODE_ENV_VAR] = mode
+        # Output goes to a file, not an undrained pipe: a full pipe blocks the
+        # controller and silently halts its event loop. See common.proc.
+        log_sink = controller_log(f"experiment_{spec.key}")
+        log_handle = ControllerLog(log_sink)
+        log_fd = log_handle.__enter__()
+        print(f"    controller log -> {log_sink}")
         proc = subprocess.Popen(
             [venv_bin("ryu-manager"), "--ofp-listen-host", "127.0.0.1",
              "--ofp-tcp-listen-port", "6653", "controller.sdn_controller"],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, stdout=log_fd, stderr=log_fd,
             preexec_fn=os.setsid,
         )
+        log_handle.__exit__()  # our copy; the child has its own
         if not wait_for_port(6653, timeout_s=10.0):
             raise ExperimentError("Ryu controller failed to listen on 6653")
         return proc

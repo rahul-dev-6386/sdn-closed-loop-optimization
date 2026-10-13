@@ -21,7 +21,7 @@ CONFIG     ?= config.yaml
         snapshot snapshot-all snapshot-list \
         dataset train train-quick verify-p7 \
         experiments experiments-dry experiments-resume verify-p10 \
-        figures verify-p11 demo \
+        figures verify-p11 demo demo-control \
         ping check-native mn-clean
 
 help: ## Show this help

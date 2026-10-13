@@ -33,7 +33,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.config import Config, load_config
 from controller.telemetry import CSV_FIELDNAMES
-from common.proc import check_required_tools, mn_clean, venv_bin
+from common.proc import (
+    ControllerLog,
+    check_required_tools,
+    controller_log,
+    mn_clean,
+    venv_bin,
+)
 from traffic.generate import PATTERNS, run_live_pattern_on_hosts
 
 PROGRESS_FILE = "data/dataset_progress.json"
@@ -169,13 +175,25 @@ class LiveDatasetCollector:
         env = os.environ.copy()
         env["PYTHONPATH"] = "."
 
+        # Drain the controller's output to a file. See common.proc.ControllerLog:
+        # an undrained PIPE blocks the controller once the 64 KiB buffer fills,
+        # which silently stops telemetry after ~24 s of every 90 s run.
+        log_sink = controller_log(run_id)
+        log_handle = ControllerLog(log_sink)
+        log_fd = log_handle.__enter__()
+        print(f"    controller log -> {log_sink}")
         ryu_proc = subprocess.Popen(
             ryu_cmd,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=log_fd,
+            stderr=log_fd,
             preexec_fn=os.setsid,
         )
+        # Safe to close our copy now: Popen duplicated the fd into the child.
+        # The handle must stay referenced until this point -- letting the
+        # ControllerLog be garbage collected first would close the fd before
+        # Popen ever saw it.
+        log_handle.__exit__()
 
         run_rows: List[Dict[str, Any]] = []
 
