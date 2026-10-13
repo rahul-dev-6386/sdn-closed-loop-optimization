@@ -1044,6 +1044,25 @@ an online predictor quietly lies.
 Throughout, `probability=None` is kept distinct from `0.0`. "I do not know" and
 "I know it is fine" must not drive the same decision.
 
+### The forecast has to be written down to be observable
+
+The predictor's output is persisted to the telemetry CSV as `p_congestion` and
+`predicted_congested`. Two properties matter:
+
+- **An absent forecast is written empty, never `0.0`.** The demo and the
+  experiment harness both need to tell "no model, or stale telemetry, or too
+  little history" apart from "predicted fine". Without the column the demo
+  reports "the model never flagged anything" — indistinguishable from a model
+  that genuinely never flagged anything.
+- **A link with no forecast publishes none.** A run in `static_shortest` or
+  `ecmp` writes blanks, so a static run's telemetry cannot be mistaken for a run
+  that had a predictor, and any lead-time comparison between modes is
+  meaningless rather than merely unfair.
+
+`TelemetryCollector.apply_forecasts` drops the previous tick's forecasts rather
+than carrying them forward. A stale forecast derived from telemetry that has
+since gone quiet is exactly the fiction P8 exists to prevent.
+
 ---
 
 ## P9 — Cost, paths and rerouting
@@ -1110,6 +1129,30 @@ only once telemetry is known fresh does a missing or degraded forecast downgrade
 to reactive. Every fallback increments a counter that `mode_report()` surfaces,
 because a results table showing `ml_aware` numbers produced under a fallback is
 the most misleading thing this project could ship.
+
+### Wiring it into the controller
+
+The loop is an ordinary object driven by two callables, so it can be tested
+without a fabric; `controller/reroute_integration.py` supplies those callables
+against a live controller and owns the decision thread.
+
+Worth stating plainly, because it was a real gap: **the loop originally existed
+but no code path constructed it.** `routing.mode` was a configuration value that
+changed nothing, so P10 would have measured four identical experiments and the
+project's headline claim would have rested on a comparison that could not
+distinguish anything. `tests/test_controller_wiring_p9.py` now pins the
+reachability directly.
+
+Two bugs surfaced only once it was wired, both invisible to the pure unit tests:
+
+1. The applier resolved installs against the flow's *current* path. During a
+   make-before-break plan the installs target the *new* path, so every install
+   was unresolvable, every plan rolled back, and no reroute ever succeeded —
+   while the decision log recorded a reroute each time.
+2. An intermediate switch's `install_ingress` and `install_egress` resolve to the
+   *same* rule. A path is a chain of exact-match rules; those two operations
+   exist to control ordering during the overlap, not to denote different rules.
+   The first and last switch additionally need the host-facing port.
 
 ### A note on Yen’s algorithm
 
