@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ryu.lib import hub  # noqa: E402
 
-from controller.reroute_loop import LoopConfig, RerouteLoop, TickReport  # noqa: E402
+from controller.reroute_loop import LoopConfig, RerouteLoop  # noqa: E402
 from routing.reroute import Operation, RerouteError  # noqa: E402
 
 LOGGER = logging.getLogger("controller.reroute_integration")

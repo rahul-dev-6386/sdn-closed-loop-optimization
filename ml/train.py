@@ -150,8 +150,11 @@ def load_labelled_csv(path: str | os.PathLike[str]) -> List[Dict[str, Any]]:
             }
             csv_label = raw.get("label_future_congested")
             record["csv_label"] = _to_bool(csv_label) if csv_label not in (None, "") else None
-            for field in _TELEMETRY_FIELDS:
-                record[field] = _to_float(raw.get(field))
+            # Named `column`, not `field`: `field` is imported from dataclasses
+            # at module scope, and shadowing it inside a function that also uses
+            # dataclasses is a landmine that only detonates on the next edit.
+            for column in _TELEMETRY_FIELDS:
+                record[column] = _to_float(raw.get(column))
             rows.append(record)
 
     if not rows:

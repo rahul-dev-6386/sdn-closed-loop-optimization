@@ -136,8 +136,6 @@ def shortest_path(
         return None
     blocked_set = {blocked} if blocked else set()
 
-    import heapq
-
     frontier: List[Tuple[float, int, Node, Path]] = [(0.0, 0, src, (src,))]
     best: Dict[Node, float] = {src: 0.0}
     while frontier:

@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 LOGGER = logging.getLogger("routing.cost")
 
@@ -190,9 +190,9 @@ class LinkMetrics:
         expensive because loss is 1.0 and forecast is 0.9") rather than being an
         opaque number. P10 reports these breakdowns.
         """
-        reference = weights.bandwidth_mbps
-        if self.bandwidth_mbps:
-            reference = self.bandwidth_mbps
+        # Utilisation is already a ratio (rate / capacity), so it normalises
+        # against 1.0 and needs no bandwidth reference. `bandwidth_mbps` is kept
+        # on the record for callers that report capacity alongside utilisation.
         return {
             "utilization": weights.a_utilization * normalize(
                 self.utilization, 1.0),
