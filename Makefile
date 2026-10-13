@@ -21,7 +21,7 @@ CONFIG     ?= config.yaml
         snapshot snapshot-all snapshot-list \
         dataset train train-quick verify-p7 \
         experiments experiments-dry experiments-resume verify-p10 \
-        figures demo \
+        figures verify-p11 demo \
         ping check-native mn-clean
 
 help: ## Show this help
@@ -191,7 +191,11 @@ experiments-resume: ## P10 -- continue an interrupted sweep, retrying failures
 
 verify-p10: ## P10 acceptance: experiment CSV schema, mode coverage, no silent gaps
 	$(PY) scripts/verify_p10.py --out results/p10_acceptance.json
-figures:     ## P11 -- comparison tables, box plots, timeline plots
+
+verify-p11: ## P11 acceptance: analysis refuses to over-claim, report renders
+	$(PY) scripts/verify_p11.py --out results/p11_acceptance.json
+figures:     ## P11 -- tables, figures and RESULTS.md from results/experiments.csv
+	$(PY) scripts/make_report.py
 	@echo "P11 (analysis): not implemented yet -- say 'start P11'"
 demo:        ## P13 -- end-to-end demonstration
 	@echo "P13 (demo): not implemented yet -- say 'start P13'"
