@@ -188,6 +188,12 @@ class SdnController(app_manager.RyuApp):
             self.telemetry.register_link(
                 link.dst_switch, link.dst_port, link.src_switch, link.src_port, link.bw_mbps, link.delay_ms
             )
+        # P9 decision loop. The object is created here so the API and the
+        # acceptance tests can report on it, but it is *started* later, once
+        # switches have connected and the flow programmer exists -- starting it
+        # now would find no datapaths and no port map.
+        self.reroute: Optional["RerouteIntegration"] = None
+
         self.telemetry_enabled = bool(self.config.get("telemetry.enabled", True))
         self.telemetry_thread = hub.spawn(self._telemetry_loop) if self.telemetry_enabled else None
         self.probe_thread = (
@@ -195,6 +201,55 @@ class SdnController(app_manager.RyuApp):
             if self.telemetry_enabled and bool(self.config.get("telemetry.probe.enabled", True))
             else None
         )
+
+    def _maybe_start_reroute_loop(self) -> None:
+        """Start the P9 decision loop once, when the fabric is ready.
+
+        Requires a flow programmer (so switches have connected), a populated
+        topology (so ports can be resolved) and at least one registered host
+        (so a path's end rules can be built). Each of those arrives
+        asynchronously, hence the repeated call -- it is a no-op until all are
+        satisfied, and it starts exactly once.
+        """
+        if self.reroute is not None:
+            return
+        if self.flows is None or not self.topology.links:
+            return
+        if not self.topology.host_ports:
+            return
+
+        from controller.reroute_integration import RerouteIntegration
+
+        self.reroute = RerouteIntegration(self)
+        self.reroute.start()
+        LOGGER.info("reroute loop state: %s", self.reroute.report())
+
+    def port_of(self, src: str, dst: str) -> Optional[int]:
+        """The port on ``src`` facing ``dst``, or ``None`` if not adjacent.
+
+        Used by the P9 reroute loop to turn an abstract "install_ingress on s2"
+        operation into a concrete output port. Returning ``None`` for a
+        non-adjacent pair is deliberate: the caller refuses the operation and
+        rolls the plan back, which is better than installing a rule that sends
+        traffic nowhere.
+        """
+        for link in self.topology.links.values():
+            if link.src_switch == src and link.dst_switch == dst:
+                return link.src_port
+            if link.src_switch == dst and link.dst_switch == src:
+                return link.dst_port
+        return None
+
+    def host_port_of(self, switch: str) -> Optional[int]:
+        """The port on ``switch`` facing its attached host, or ``None``.
+
+        A path's first switch receives the packet from a host and its last
+        switch forwards one, so the P9 applier needs this to build the end rules.
+        When a switch has several hosts attached the lowest port is returned; the
+        diamond gives each switch at most one.
+        """
+        ports = [port for (sw, port) in self.topology.host_ports if sw == switch]
+        return min(ports) if ports else None
 
     def _switch_name(self, datapath: Any) -> str:
         """Return the Mininet switch name for a datapath.
@@ -429,6 +484,7 @@ class SdnController(app_manager.RyuApp):
             # Once every switch is up, proactively learn every host's MAC so the
             # very first ARP request can be answered immediately (see
             # resolve_all_hosts for why passive learning deadlocks here).
+            self._maybe_start_reroute_loop()
             if not self._hosts_resolved and self._all_switches_ready():
                 if self.resolve_all_hosts():
                     self._hosts_resolved = True
