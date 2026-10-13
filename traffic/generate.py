@@ -255,63 +255,76 @@ def ramp_plan(
 
     The aggregate of several concurrent flows, on the other hand, can hold any
     shape: adding a flow raises the rate, letting one expire lowers it, and
-    nothing in between ever drops to zero.
+    nothing in between has to drop to zero.
 
     Algorithm
     ---------
-    Split the profile into units of ``unit_mbps``. Unit ``i`` is started at the
-    first step that needs more than ``i`` units and expires at the last step that
-    still needs it, so the sum of live flows equals the requested rate
-    throughout. Each unit therefore gets exactly one flow with a computed
-    lifetime, and every flow is started once and never re-launched.
+    Split the profile into units of ``unit_mbps``: step ``k`` needs
+    ``rate[k] / unit_mbps`` of them. Unit ``i`` is live during every maximal run
+    of consecutive steps that need more than ``i`` units, and each such run
+    becomes one flow with a computed lifetime.
+
+    Handling *maximal runs* rather than a single interval per unit is what makes
+    a repeating profile work. An earlier version gave each unit one interval from
+    its first step to its last, which silently pinned the aggregate at peak
+    across every cycle after the first -- a ramp that cycled twice read as
+    "climb then sit at maximum".
+
+    Zero is respected too. An earlier version forced every step to need at least
+    one unit, which made it arithmetically impossible to express an idle phase --
+    so ``bursty_onoff``, which is *supposed* to fall to zero, could not.
 
     Parameters
     ----------
     profile:
-        Per-step offered rates in Mbps. Need not reach zero and need not be
-        monotonic in either direction.
+        Per-step offered rates in Mbps. May be zero, may rise and fall, and is
+        cycled to fill the run.
     step_s:
         Duration of one step.
     duration_s:
-        Total run duration; the profile is cycled to fill it.
+        Total run duration.
     unit_mbps:
-        Granularity. Each flow carries this rate, so smaller units give a finer
-        approximation of the profile.
+        Granularity. Each flow carries this rate, so smaller units approximate
+        the profile more closely.
 
     Returns
     -------
     list of ScheduledFlow
-        One entry per flow, carrying its own lifetime.
+        One entry per (unit, contiguous run it is needed for). The same port is
+        reused across a unit's runs, which is safe because those runs are
+        disjoint in time.
 
-    Notes
-    -----
-    Ports are handed out from 5201 upward. The caller must run one iperf3 server
-    per port used, and must not reuse a port across flows -- a lingering flow on
-    a port would silently add its rate to whatever else uses it.
+    Raises
+    ------
+    ValueError
+        If ``unit_mbps`` is not positive, or ``step_s`` is not positive.
     """
+    if unit_mbps <= 0:
+        raise ValueError(f"unit_mbps must be positive, got {unit_mbps}")
+    if step_s <= 0:
+        raise ValueError(f"step_s must be positive, got {step_s}")
+
     n_steps = max(1, int(round(duration_s / step_s)))
     rates = [float(profile[k % len(profile)]) for k in range(n_steps)]
-    needs = [max(1, int(round(r / unit_mbps))) for r in rates]
-
-    # For each unit, the first and last step at which it is required.
-    first_step: Dict[int, int] = {}
-    last_step: Dict[int, int] = {}
-    for step, count in enumerate(needs):
-        for unit in range(count):
-            first_step.setdefault(unit, step)
-            last_step[unit] = step
+    needs = [max(0, int(round(rate / unit_mbps))) for rate in rates]
+    n_units = max(needs, default=0)
 
     flows: List["ScheduledFlow"] = []
-    for unit in sorted(first_step):
-        start_s = first_step[unit] * step_s
-        life_steps = last_step[unit] - first_step[unit] + 1
-        life_s = min(life_steps * step_s, duration_s - start_s)
-        if life_s <= 0:
-            continue
-        flows.append(ScheduledFlow(
-            start_s=start_s, port=5201 + unit, rate_mbps=unit_mbps,
-            life_s=life_s,
-        ))
+    for unit in range(n_units):
+        start_step: Optional[int] = None
+        for step, count in enumerate(needs + [0]):
+            needed = count > unit
+            if needed and start_step is None:
+                start_step = step
+            elif not needed and start_step is not None:
+                start_s = start_step * step_s
+                life_s = (step - start_step) * step_s
+                if life_s > 0:
+                    flows.append(ScheduledFlow(
+                        start_s=start_s, port=5201 + unit,
+                        rate_mbps=unit_mbps, life_s=life_s,
+                    ))
+                start_step = None
     return flows
 
 
