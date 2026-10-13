@@ -13,22 +13,80 @@ probability into a path cost function. The model never picks a path itself.
 | P1 | Environment, pinned deps, Makefile, acceptance test | **done** (13/13) |
 | P2 | Multipath topology (`topology/multipath_topology.py`) | **done** (22/22) |
 | P3 | OF1.3 controller + ARP proxy + shortest-path forwarding | **done** (17/17) |
-| P4 | Topology discovery (NetworkX, k-shortest paths) | **done** (20/20) |
+| P4 | Topology discovery (live LLDP, k-shortest paths) | **done** (18/18) |
 | P5 | Telemetry (rates, latency probes, loss, CSV) | **done** (11/11) |
 | P6 | Dataset generation + labelling (live runs, 5 patterns, offline future labels) | **done** (24/24) |
-| P7 | ML training + evaluation | pending |
-| P8 | ML inference inside the controller | pending |
-| P9 | Cost function, hysteresis, per-flow rerouting | pending |
-| P10 | Experiments (4 modes × scenarios × repetitions) | pending |
-| P11 | Analysis, plots, statistical tests | pending |
-| P12 | FastAPI + JWT auth + React dashboard | **done** (27/27) |
-| P13 | Scale, ablation, demo | pending |
+| P7 | ML training + evaluation | code + tests done; **awaiting a real trained model** |
+| P8 | Online inference inside the controller | code + tests done; **not yet run live** |
+| P9 | Cost function, hysteresis, per-flow rerouting | code + tests done; **not yet run live** |
+| P10 | Experiments (4 modes × scenarios × repetitions) | harness done (`make experiments-dry` works); **sweep not yet run** |
+| P11 | Analysis, plots, statistical tests | code + tests done; **awaiting P10 results** |
+| P12 | FastAPI + JWT auth + React dashboard | **done** (27/27), parked in `future/` |
+| P13 | Demonstration | code + tests done; **not yet run live** |
 
-> **Note on ordering.** P12 was built out of sequence, at request. It is
-> verified against the data P3 actually produces. Everything ML-shaped
-> (predictions, congestion probability, before/after comparison) is wired to
-> real endpoints but returns an explicit `available: false` *with the reason*
-> until P5–P7 land. Nothing is mocked to make a panel look populated.
+**Unit tests: 518 passing**, hermetic (no root, no fabric, no dataset).
+
+### What "code + tests done" means, precisely
+
+P7–P11 and P13 are implemented and unit-tested, but their *live* acceptance runs
+have not happened yet. The distinction is maintained deliberately:
+
+- **Unit tests** prove the logic is correct on synthetic inputs (leakage guards,
+  cost normalisation, make-before-break ordering, hysteresis, statistics).
+- **Acceptance tests** prove it works on the real fabric. These are the
+  pass counts in the table above, and they are what `make snapshot` records.
+
+No phase below P6 is claimed as verified until its acceptance script has printed
+its own `SUMMARY: n passed, m failed`. See `results/snapshots/PROGRESS.md` for
+the machine-readable ledger and `make snapshot` to refresh it.
+
+> **Note on ordering.** P12 was built out of sequence, at request, and was later
+> parked into `future/` at the user's direction. It is verified against the data
+> P3 actually produces. Everything ML-shaped (predictions, congestion
+> probability, before/after comparison) is wired to real endpoints but returns an
+> explicit `available: false` *with the reason* until P5–P7 land. Nothing is
+> mocked to make a panel look populated.
+
+---
+
+## The bug that mattered most: a silent controller deadlock
+
+Worth reading before trusting any telemetry this project produces.
+
+Every long-lived controller spawn used `stdout=subprocess.PIPE` with nothing
+reading it. An OS pipe buffer is finite (~64 KiB on Linux). Once the controller
+filled it, it blocked in `write()` — and because Ryu's event loop runs in that
+same process, the controller went **inert**. No traceback. No stall warning. No
+error of any kind.
+
+The observable effect was that telemetry silently stopped about 24 s into every
+90 s collection run: 13 samples per link where ~45 were expected. Because every
+run emitted the same amount of logging, the cutoff was *identical* across all 30
+runs, which made it look like a deliberate configuration rather than a resource
+limit. P7 training then failed with "dataset too short" — a misleading message,
+since the dataset shape was correct; it had been truncated by a blocked writer.
+
+This was also the true cause of the earlier all-zero dataset: port-stats replies
+stopped being processed after ~24 s, so the second half of every run reported
+nothing.
+
+### The evidence
+
+The controller logs captured from the completed 30-run sweep are **79 023 and
+80 377 bytes** — just past the 65 536-byte default pipe buffer on Linux. That is
+the precise point at which `write()` blocks, and it matches the 24 s cutoff
+exactly. Had these logs been drained to a file from the start, they would have
+kept growing past 79 KB for the full 90 s of each run.
+
+**Fix** (`common/proc.ControllerLog`): the controller's output goes to a file. A
+file never applies back-pressure, so the child cannot block — and the log is
+kept for diagnosis, which `DEVNULL` would not allow.
+
+**Guards** (`tests/test_process_drain.py`): writes 4 MiB through the sink and
+asserts it completes; demonstrates that the *undrained* arrangement does block;
+and a static check fails the build if any script spawns the controller into an
+unread pipe. That static check immediately caught the one site the first pass
+had missed.
 
 ---
 
@@ -90,15 +148,26 @@ scripts/
   verify_p2.py         P2 acceptance test (root)
   verify_p3.py         P3 acceptance test (root)
   verify_p12.sh        P12 acceptance test (no root)
-controller/            sdn_controller.py topology.py routing.py telemetry.py
+  verify_p5_live.py    P5 acceptance test (root)
+  verify_p7.py         P7 acceptance test (no root)
+  run_experiments.py   P10 harness: 4 modes x scenarios x repetitions (root)
+  make_report.py       P11 report: tables, figures, RESULTS.md
+  demo.py              P13 end-to-end demonstration (root)
+  snapshot.py          records verified results to results/snapshots/
+controller/            sdn_controller.py topology.py telemetry.py
                        flow_manager.py arp_proxy.py
-ml/                    collect_dataset.py features.py train.py predict.py evaluate.py
+                       reroute_loop.py (P9 decision loop, four modes)
+ml/                    collect_dataset.py features.py train.py
+                       predict.py evaluate.py
 topology/              multipath_topology.py
-traffic/               generate.py experiments.py
+routing/               cost.py paths.py reroute.py (P9)
+experiments/           stats.py analyze.py report.py (P10/P11)
+traffic/               generate.py
 future/                api/ (FastAPI), dashboard/ (React), tests/ (test_api_p12.py)
 data/                  telemetry CSV, logs
 results/               model.joblib, metrics, figures, experiment CSVs
-tests/                 active pytest suite (P1-P6)
+                       snapshots/ (PROGRESS.md + MANIFEST.json)
+tests/                 active pytest suite (518 tests, hermetic)
 ```
 
 ---
@@ -884,3 +953,277 @@ sudo .venv/bin/python ml/collect_dataset.py --live --runs-per-pattern 10 --durat
   accuracy target will fail whenever a sample is late. Latency must come from
   ICMP probes — and note the `tc` nanosecond trap above, since every latency
   feature depends on delay units being right.
+---
+
+## P7 — ML training and evaluation
+
+Predicts, per link, whether it will be congested within the next
+`ml.horizon_n_s`. The model never chooses a path — it supplies one term of the
+P9 cost function.
+
+### Leakage prevention is structural, not procedural
+
+Three guards in `ml/features.py`, each with its own test:
+
+1. **The allowlist cannot contain an identity or target field.** Checked at
+   construction, so a misconfigured `ml.features` fails immediately instead of
+   producing a model that memorised which switch was busy.
+2. **The label horizon starts strictly after the feature window ends**
+   (`ml.label_gap_s`). A window's own endpoint sample cannot satisfy its own
+   label. Tested by building a series congested at exactly one instant and
+   asserting the window ending there is labelled 0.
+3. **Rows are grouped per `(link, run)`, not per link.** The dataset holds many
+   runs of the same link separated by teardown gaps; grouping by link alone
+   concatenated them, so a run's first windows were built from the previous
+   run's idle tail — describing a transition that never happened. This produced
+   4 spurious windows in a two-run test and is now mutation-verified.
+
+A fourth test perturbs the future and asserts no already-built feature row
+changes.
+
+### Why PR-AUC, and why lead time
+
+Most 2 s windows are not followed by congestion, so accuracy is dominated by the
+majority class and ROC-AUC flatters a model that merely avoids false positives.
+PR-AUC does not. Both are cross-checked against scikit-learn in the tests.
+
+**Lead time** is the metric that makes the predictor useful: seconds between the
+first correct alarm and the onset of congestion. A model that reacts *after*
+congestion scores an excellent F1 and is useless for proactive rerouting, so it
+is reported separately and is the headline in the demo.
+
+### Evaluation protocol
+
+- **Chronological split**, never random. Telemetry rows are strongly
+  autocorrelated, so a random split puts near-duplicates of a training window
+  into the test set and reports a fictional score. A test pins the leakage a
+  random split would introduce.
+- **Leave-one-traffic-pattern-out**: the model must generalise to a load shape it
+  has never seen, because that is what deployment looks like.
+- **Honest failure**: if the held-out slice is single-class, PR-AUC is undefined
+  for every candidate. Selecting `max` over a set of NaNs silently returns
+  whichever model was built first. The report now says
+  `evaluation_is_meaningful: false` and falls back to F1.
+
+### Commands
+
+```bash
+# collect a real labelled dataset (root, ~2 h for 30 runs x 90 s)
+sudo .venv/bin/python ml/collect_dataset.py --live --runs-per-pattern 6 --duration 90
+
+# train and evaluate
+make train              # full
+make train-quick        # fewer trees, for a sanity run
+
+# acceptance
+make verify-p7
+```
+
+Artefacts: `results/model.joblib`, `results/ml_metrics.json`,
+`results/feature_importance.png`.
+
+The saved bundle carries its `feature_names` and window geometry, so P8 refuses a
+mismatched feature set rather than silently scoring a reordered matrix — a
+reordered matrix produces confident, wrong numbers rather than an error.
+
+---
+
+## P8 — Online inference
+
+`ml/predict.py` turns the trained model into something a controller can call
+every telemetry tick. The hard part is not `predict_proba`; it is the four ways
+an online predictor quietly lies.
+
+| Condition | Response | Why it matters |
+|---|---|---|
+| Link stopped reporting | no probability, `reason="stale"` | Predicting from a stale window causes a reroute away from a link nobody is measuring |
+| Less than a full window | no probability, `insufficient_history` | A partial window is a distribution the model never saw |
+| Inference over budget | batch marked `degraded` | The control loop must never stall behind a slow model |
+| Feature set drifted | `ModelUnavailable` raised | A reordered matrix yields confident nonsense, not an error |
+
+Throughout, `probability=None` is kept distinct from `0.0`. "I do not know" and
+"I know it is fine" must not drive the same decision.
+
+---
+
+## P9 — Cost, paths and rerouting
+
+### The cost function
+
+```
+cost = a·util_norm + b·latency_norm + c·loss_norm + d·p_congestion
+```
+
+The first three terms are present-load measures; the last is the P8 forecast.
+That split is the whole point: the forecast describes how likely a link is to
+*become* a bottleneck, which is what a path planner needs and what a threshold on
+current utilisation cannot give.
+
+Every input is normalised to `[0,1]` before weighting. Without normalisation the
+terms are not comparable — milliseconds, percentages and probabilities do not
+share a scale — and the weight vector stops meaning anything.
+
+**Path cost is the maximum of its links, not the sum.** A path is only as good as
+its worst link; a sum would scale with path *length*, silently preferring a long
+path of cheap links over a short congested one.
+
+### Three guards against oscillation
+
+| Guard | Prevents |
+|---|---|
+| Improvement ratio (0.85) | Two near-equal paths trading the flow back and forth every tick |
+| Per-flow cooldown (10 s) | A single flow being disrupted repeatedly |
+| Minimum dwell (8 s) | A flow moved immediately after arriving |
+
+Each is mutation-verified: removing the improvement guard fails two tests.
+
+### Make-before-break ordering
+
+`routing/reroute.py` emits an ordered operation list rather than calling OpenFlow,
+so the ordering is testable without a fabric. The two properties asserted:
+
+1. **Every install precedes every delete** — there is never a moment in which
+   the flow matches no rule.
+2. **Old ingress is deleted before old egress** — during the commit the old path
+   can still carry the flow. Reversing those drops packets at the switch that
+   receives them.
+
+On failure the sequence rolls back, deleting exactly what this attempt installed.
+That works *because* commit precedes cleanup: the old path is never fully removed
+while the new one is incomplete.
+
+### Four modes, one code path
+
+| Mode | Sees | Acts |
+|---|---|---|
+| `static_shortest` | nothing | never reroutes |
+| `ecmp` | present load | no forecast |
+| `reactive_threshold` | present load | only once a link is over threshold |
+| `ml_aware` | present load **+ forecast** | before congestion |
+
+Separate implementations per mode would make any difference attributable to the
+code rather than the policy — which is the comparison P10 exists to make.
+
+**Degradation is explicit and counted.** A stalled fabric falls all the way back
+to shortest path (rule 7: untrusted telemetry means no signal can be trusted);
+only once telemetry is known fresh does a missing or degraded forecast downgrade
+to reactive. Every fallback increments a counter that `mode_report()` surfaces,
+because a results table showing `ml_aware` numbers produced under a fallback is
+the most misleading thing this project could ship.
+
+### A note on Yen’s algorithm
+
+`routing/paths.py` implements k-shortest paths as bounded depth-first
+enumeration rather than Yen's. Yen's deviation step removes *nodes* from a
+temporary graph and must special-case the source; an earlier draft got that
+wrong and silently returned a single path for every input. For a switch graph of
+tens of nodes the complexity trade is not worth the subtlety.
+
+---
+
+## P10 — Experiments
+
+```bash
+make experiments-dry        # print the run plan, touch nothing
+sudo make experiments       # the full sweep (long: 4 modes x 3 scenarios x N reps)
+sudo make experiments-resume # continue after an interruption, retrying failures
+```
+
+Each run is a full fabric held for 90 s, and Mininet runs **strictly
+sequentially**: the box has ~4 GiB free, and two fabrics contending for
+`ovs-vsftpd` and the OpenFlow ports produce results that are wrong rather than
+slow.
+
+Three details that materially affect the data:
+
+- The telemetry CSV is deleted before every run. Without that a run inherits the
+  previous run's samples and looks uncongested at the start by construction.
+- The routing mode is selected through `$SDN_ROUTING_MODE`, not by editing
+  `config.yaml`, so the mode under test is not a function of what the previous
+  run left behind.
+- Repetitions are the outer loop, so the four modes for one repetition run
+  back-to-back; a sweep that degrades partway still leaves comparable rows.
+
+Failed runs are recorded as rows with a populated `error` rather than dropped, so
+`--resume` retries them and the results file shows a gap instead of hiding one.
+
+---
+
+## P11 — Analysis
+
+```bash
+make figures      # results/RESULTS.md, summary CSV, analysis JSON, figures
+make verify-p11
+```
+
+With 3–10 repetitions of a 90 s run, most differences between modes are noise.
+So every comparison carries Cohen's *d*, a 95 % interval and an explicit verdict:
+
+- `separated from best` — intervals do not overlap
+- `overlapping with best` — the data does not distinguish them
+- `insufficient repetitions` — cannot say
+
+The interval-overlap test is deliberately conservative; it under-claims, which is
+the right direction for a claim that a new method is better.
+
+`RESULTS.md` closes with two explicit lists — what the data supports, and what it
+does not — plus the only thing that moves a line from the second list to the
+first. A mode is never called the winner where the verdict is "overlapping", and a
+sweep where runs fell back under a different mode than their label says gets a
+disclosure table *before* any comparison.
+
+---
+
+## P13 — Demonstration
+
+```bash
+sudo make demo            # ml_aware: the proactivity claim
+sudo make demo-control    # reactive_threshold: the contrast
+```
+
+The one claim worth demonstrating is **proactivity**: the model should flag a link
+before it congests, and the controller should move traffic off it before the
+threshold is crossed. The demo prints a timeline and checks:
+
+1. Did the forecast *lead*? The first flagged sample is compared against the
+   first sample over threshold.
+2. Did traffic actually move? Utilisation is compared across the two paths.
+
+Both checks report honestly whichever way they come out, and the exit codes
+distinguish three outcomes: `0` demonstrated, `1` ran but did not demonstrate
+(including a run where the model merely *reacted*), `2` produced nothing to
+analyse. A demo that can only ever succeed is not a demonstration.
+
+---
+
+## Progress evidence
+
+```bash
+make snapshot          # non-root targets
+sudo make snapshot-all # everything, including root-only ones
+make snapshot-list     # show the catalogue
+```
+
+`scripts/snapshot.py` runs the **real** verification commands and records exit
+status, pass/fail counts, duration and the git commit into
+`results/snapshots/MANIFEST.json` and a human-readable
+`results/snapshots/PROGRESS.md`.
+
+Two properties are deliberate:
+
+- A non-zero exit is authoritative, **and** any reported failure count is
+  re-checked — so a harness that lies in its exit code still cannot read green.
+- A target whose verification script does not exist yet reports `planned`
+  ("not built"). P10 showing as unbuilt is honest; P10 silently vanishing from
+  the catalogue is not.
+
+This exists because phase claims rot: a later change can break an earlier phase
+while the README still says green.
+
+### Common commands
+
+```bash
+make help              # every target with its description
+make test              # unit suite
+make mn-clean          # tear down leftover Mininet state
+```
