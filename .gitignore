@@ -26,3 +26,6 @@ data/sdn.db*
 
 # secrets
 .env
+
+# Collection progress marker (rewritten in place by ml/collect_dataset.py)
+data/dataset_progress.json

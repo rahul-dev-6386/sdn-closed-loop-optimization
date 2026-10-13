@@ -533,11 +533,67 @@ class MultipathTopology:
         from functools import partial
 
         from mininet.net import Mininet
-        from mininet.link import TCLink
+        from mininet.link import TCIntf, TCLink
         from mininet.node import Controller as MininetController
         from mininet.node import Host as MininetHost
         from mininet.node import OVSSwitch
         from mininet.node import RemoteController
+
+        class CustomTCIntf(TCIntf):
+            """TCIntf with r2q configured to prevent Linux kernel sch_htb quantum warnings."""
+
+            def bwCmds(
+                self,
+                bw: Optional[float] = None,
+                speedup: int = 0,
+                use_hfsc: bool = False,
+                use_tbf: bool = False,
+                latency_ms: Optional[float] = None,
+                enable_ecn: bool = False,
+                enable_red: bool = False,
+            ) -> Tuple[List[str], str]:
+                cmds, parent = super().bwCmds(
+                    bw=bw,
+                    speedup=speedup,
+                    use_hfsc=use_hfsc,
+                    use_tbf=use_tbf,
+                    latency_ms=latency_ms,
+                    enable_ecn=enable_ecn,
+                    enable_red=enable_red,
+                )
+                fixed_cmds = [
+                    c.replace("htb default 1", "htb default 1 r2q 200")
+                    for c in cmds
+                ]
+                return fixed_cmds, parent
+
+        class ShapedTCLink(TCLink):
+            """TCLink using CustomTCIntf with r2q 200."""
+
+            def __init__(
+                self,
+                node1: Any,
+                node2: Any,
+                port1: Optional[int] = None,
+                port2: Optional[int] = None,
+                intfName1: Optional[str] = None,
+                intfName2: Optional[str] = None,
+                addr1: Optional[str] = None,
+                addr2: Optional[str] = None,
+                **params: Any,
+            ) -> None:
+                params.setdefault("intf", CustomTCIntf)
+                super().__init__(
+                    node1,
+                    node2,
+                    port1=port1,
+                    port2=port2,
+                    intfName1=intfName1,
+                    intfName2=intfName2,
+                    addr1=addr1,
+                    addr2=addr2,
+                    **params,
+                )
 
         spec = self.spec
         if self.controller is None:
@@ -591,7 +647,7 @@ class MultipathTopology:
             mn_link = self.net.addLink(
                 link.a,
                 link.b,
-                cls=TCLink,
+                cls=ShapedTCLink,
                 bw=link.bw_mbps,
                 delay=tc_delay(link.delay_ms),
                 max_queue_size=link.max_queue_size,
@@ -602,7 +658,7 @@ class MultipathTopology:
             mn_link = self.net.addLink(
                 host.switch,
                 host.name,
-                cls=TCLink,
+                cls=ShapedTCLink,
                 bw=spec.host_link_bw_mbps,
                 delay=tc_delay(spec.host_link_delay_ms),
                 max_queue_size=spec.host_link_max_queue_size,

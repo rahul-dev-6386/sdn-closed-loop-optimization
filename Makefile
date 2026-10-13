@@ -18,7 +18,8 @@ CONFIG     ?= config.yaml
         topo topo-graph verify-p2 controller verify-p3 portmap \
         topo-discovery verify-p4 verify-p4-live \
         api api-sudo dashboard dashboard-install verify-p12 \
-        dataset train experiments figures demo \
+        snapshot snapshot-all snapshot-list \
+        dataset train train-quick verify-p7 experiments figures demo \
         ping check-native mn-clean
 
 help: ## Show this help
@@ -92,6 +93,18 @@ verify-p12: ## P12 acceptance: auth, endpoints, websocket, dashboard build
 	bash scripts/verify_p12.sh
 
 # -----------------------------------------------------------------------------
+# Progress snapshots (evidence, not intent)
+# -----------------------------------------------------------------------------
+snapshot: ## Capture a verified progress snapshot (no root targets)
+	$(PY) scripts/snapshot.py
+
+snapshot-all: ## Capture every target including root-only ones
+	$(PY) scripts/snapshot.py --all
+
+snapshot-list: ## List snapshot targets
+	$(PY) scripts/snapshot.py --list
+
+# -----------------------------------------------------------------------------
 # Later phases -- declared now so the interface is stable, implemented per phase.
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
@@ -158,7 +171,13 @@ check-smoke: ## P6 quality check: validate smoke dataset integrity
 verify-p6: ## P6 acceptance: traffic patterns, future labeling, balanced dataset
 	$(PY) scripts/verify_p6.py --out results/p6_dataset.json
 train:       ## P7 -- train + evaluate the congestion predictor
-	@echo "P7 (train): not implemented yet -- say 'start P7'"
+	$(PY) -m ml.train
+
+train-quick: ## P7 -- fast sanity training (fewer trees)
+	$(PY) -m ml.train --quick
+
+verify-p7: ## P7 acceptance: features, leakage guards, model, bundle
+	$(PY) scripts/verify_p7.py --out results/p7_acceptance.json
 experiments: ## P10 -- 4 modes x scenarios x repetitions
 	@echo "P10 (experiments): not implemented yet -- say 'start P10'"
 figures:     ## P11 -- comparison tables, box plots, timeline plots

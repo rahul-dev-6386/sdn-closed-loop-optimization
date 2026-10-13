@@ -206,6 +206,7 @@ def main() -> int:
     for stale in ("data/topology.json", "data/portmap.json"):
         if os.path.isfile(stale):
             os.remove(stale)
+    check("data/portmap.json does NOT exist at startup (pure live discovery)", not os.path.exists("data/portmap.json"))
     ok("Cleaned leftover controller/mininet processes and stale topology files")
 
     # 1. Start Ryu Controller
@@ -274,6 +275,12 @@ def main() -> int:
         h1 = net.get("h1")
         h4 = net.get("h4")
 
+        # Warm up first with a ping so the controller discovers host attachment ports dynamically
+        info("warming up network with initial ping to trigger host learning...")
+        net.ping([h1, h4])
+        time.sleep(0.5)
+
+        info("verifying 0% loss between h1 and h4 after host discovery...")
         ping_loss = net.ping([h1, h4])
         check("ping between h1 and h4 succeeded (0% loss)", ping_loss == 0.0, f"loss={ping_loss}%")
 
@@ -286,11 +293,24 @@ def main() -> int:
         # 5. Dynamic Link Failure (bring s1-s2 down)
         section("5. Dynamic Link Failure Handling")
         link_timeout = float(cfg.get("discovery.link_timeout_s", 6.0))
+
+        # Assert link exists BEFORE bringing it down!
+        data_before = read_live_topology()
+        links_before = data_before.get("links", []) if data_before else []
+        s1_s2_present_before = any(
+            (l["src"] == "s1" and l["dst"] == "s2") or (l["src"] == "s2" and l["dst"] == "s1")
+            for l in links_before
+        )
+        check("link s1--s2 exists in topology before link-down test", s1_s2_present_before)
+        if not s1_s2_present_before:
+            bad("Cannot test link down: link s1--s2 was never discovered in topology")
+            return 1
+
         t_down_start = time.time()
-        print(f"  [{time.strftime('%H:%M:%S')}] Bringing link s1--s2 down (configLinkStatus down)...")
+        print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_down_start))}] Bringing link s1--s2 down (configLinkStatus down)...")
         net.configLinkStatus("s1", "s2", "down")
 
-        down_deadline = time.time() + link_timeout + 4.0
+        down_deadline = time.time() + link_timeout + 6.0
         down_detected = False
         t_down_detected = None
 
@@ -305,15 +325,20 @@ def main() -> int:
                 down_detected = True
                 t_down_detected = time.time()
                 break
-            time.sleep(0.3)
+            time.sleep(0.2)
 
-        delta_down = t_down_detected - t_down_start if down_detected else 0.0
-        print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_down_detected or time.time()))}] Controller removed link s1--s2 from graph (delta={delta_down:.2f}s)")
-        check(
-            f"controller removed link s1--s2 within link_timeout_s ({link_timeout:.1f}s)",
-            down_detected and delta_down <= (link_timeout + 3.0),
-            f"delta={delta_down:.2f}s",
-        )
+        if down_detected and t_down_detected is not None:
+            delta_down = t_down_detected - t_down_start
+            print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_down_detected))}] Controller removed link s1--s2 from graph (delta={delta_down:.2f}s)")
+            check(
+                f"controller removed link s1--s2 within link_timeout_s ({link_timeout:.1f}s)",
+                delta_down <= (link_timeout + 3.0),
+                f"delta={delta_down:.2f}s",
+            )
+        else:
+            delta_down = time.time() - t_down_start
+            print(f"  [{time.strftime('%H:%M:%S')}] Controller failed to remove link s1--s2 (timeout after {delta_down:.2f}s)")
+            check(f"controller removed link s1--s2 within link_timeout_s ({link_timeout:.1f}s)", False, f"timed out after {delta_down:.2f}s")
 
         paths_remaining = data.get("paths_h1_h4", []) if data else []
         expected_surviving_path = ["h1", "s1", "s3", "s4", "h4"]
@@ -326,7 +351,7 @@ def main() -> int:
         # 6. Dynamic Link Restoration (bring s1-s2 up)
         section("6. Dynamic Link Restoration & LLDP Re-discovery")
         t_up_start = time.time()
-        print(f"  [{time.strftime('%H:%M:%S')}] Bringing link s1--s2 UP (configLinkStatus up)...")
+        print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_up_start))}] Bringing link s1--s2 UP (configLinkStatus up)...")
         net.configLinkStatus("s1", "s2", "up")
 
         up_deadline = time.time() + discovery_timeout + 6.0
@@ -344,11 +369,16 @@ def main() -> int:
                 up_detected = True
                 t_up_detected = time.time()
                 break
-            time.sleep(0.3)
+            time.sleep(0.2)
 
-        delta_up = t_up_detected - t_up_start if up_detected else 0.0
-        print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_up_detected or time.time()))}] Controller re-discovered link s1--s2 via LLDP (delta={delta_up:.2f}s)")
-        check("controller restored link via LLDP", up_detected, f"delta={delta_up:.2f}s")
+        if up_detected and t_up_detected is not None:
+            delta_up = t_up_detected - t_up_start
+            print(f"  [{time.strftime('%H:%M:%S', time.localtime(t_up_detected))}] Controller re-discovered link s1--s2 via LLDP (delta={delta_up:.2f}s)")
+            check("controller restored link via LLDP", True, f"delta={delta_up:.2f}s")
+        else:
+            delta_up = time.time() - t_up_start
+            print(f"  [{time.strftime('%H:%M:%S')}] Controller failed to re-discover link s1--s2 (timeout after {delta_up:.2f}s)")
+            check("controller restored link via LLDP", False, f"timed out after {delta_up:.2f}s")
 
         restored_paths = data.get("paths_h1_h4", []) if data else []
         check("both paths restored in controller k-shortest paths", len(restored_paths) == 2, f"paths={restored_paths}")

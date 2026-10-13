@@ -449,3 +449,70 @@ def test_verify_p5_live_dry_run_and_imports() -> None:
     assert "Preflight passed successfully" in proc.stdout
 
 
+
+
+def test_no_fabricated_row_before_first_rate(tmp_path: Any) -> None:
+    """A link with no rate record yet must be skipped, not emitted as zeros.
+
+    Regression test. A rate needs two counter readings, so during the first
+    poll after a switch connects there is legitimately nothing to report. The CSV
+    writer used to emit a full zero-valued row flagged ``is_stale=True`` --
+    exactly one per link per run -- and the labeller consumed those fakes as
+    real observations. That single warm-up artefact showed up as a 7.1% stale
+    fraction in every collected run and pushed the class balance off target.
+    """
+    csv_file = tmp_path / "telemetry_warmup.csv"
+    cfg = load_config()
+    collector = TelemetryCollector(cfg, run_id="test_warmup")
+    collector.csv_path = str(csv_file)
+
+    collector.register_link(
+        src_switch="s1", src_port=2,
+        dst_switch="s2", dst_port=1,
+        capacity_mbps=10.0, delay_ms=5.0,
+    )
+
+    # First poll: baseline only, no delta is computable.
+    first = collector.record_port_stats_reply(
+        switch="s1", port_no=2,
+        tx_bytes=0, rx_bytes=0, tx_packets=0, rx_packets=0,
+        tx_dropped=0, rx_dropped=0, tx_errors=0, rx_errors=0,
+        timestamp_monotonic=1.0,
+    )
+    assert first is None, "first sample must not produce a rate record"
+
+    # The snapshot must therefore contain NO row for this link yet.
+    assert collector.write_csv_snapshot() == []
+
+    # Second poll yields a real rate, and only then is a row emitted.
+    second = collector.record_port_stats_reply(
+        switch="s1", port_no=2,
+        tx_bytes=1_000_000, rx_bytes=0, tx_packets=800, rx_packets=0,
+        tx_dropped=0, rx_dropped=0, tx_errors=0, rx_errors=0,
+        timestamp_monotonic=3.0,
+    )
+    assert second is not None
+    rows = collector.write_csv_snapshot()
+    assert len(rows) == 1
+    assert rows[0].is_stale is False
+
+
+def test_partial_coverage_skips_only_the_unmeasured_link(tmp_path: Any) -> None:
+    """A measured link is reported even while a sibling link has no rate yet."""
+    csv_file = tmp_path / "telemetry_partial.csv"
+    cfg = load_config()
+    collector = TelemetryCollector(cfg, run_id="test_partial")
+    collector.csv_path = str(csv_file)
+
+    collector.register_link("s1", 2, "s2", 1, 10.0, 5.0)
+    collector.register_link("s1", 3, "s3", 1, 10.0, 5.0)
+
+    # Only port 2 gets two readings; port 3 stays unmeasured.
+    collector.record_port_stats_reply(
+        "s1", 2, 0, 0, 0, 0, 0, 0, 0, 0, timestamp_monotonic=1.0)
+    collector.record_port_stats_reply(
+        "s1", 2, 1_000_000, 0, 800, 0, 0, 0, 0, 0, timestamp_monotonic=3.0)
+
+    rows = collector.write_csv_snapshot()
+    assert len(rows) == 1
+    assert rows[0].src_port == 2

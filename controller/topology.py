@@ -198,6 +198,8 @@ class TopologyTracker:
         self.dpid_to_name_map: Dict[int, str] = {}
         # canonical_name -> DiscoveredLink
         self.links: Dict[str, DiscoveredLink] = {}
+        # ip_address -> configured host name (e.g. '10.0.0.1' -> 'h1')
+        self.configured_host_names: Dict[str, str] = {}
 
         # Default parameters from config
         topo_cfg = self.config.get("topology", {})
@@ -212,7 +214,7 @@ class TopologyTracker:
         self._init_from_config()
 
     def _init_from_config(self) -> None:
-        """Pre-populate static configuration from config.yaml if available."""
+        """Pre-populate static switch configuration and host names from config.yaml."""
         topo_cfg = self.config.get("topology", {})
         switches = topo_cfg.get("switches", [])
         for sw in switches:
@@ -226,9 +228,10 @@ class TopologyTracker:
         for h in hosts:
             name = h.get("name")
             ip = h.get("ip", "").split("/")[0]
-            sw = h.get("switch")
-            if name and sw:
-                self.add_host(name, ip=ip, switch=sw, port=None)
+            if name and ip:
+                self.configured_host_names[ip] = name
+        # Hosts without ports are NOT pre-populated into self.host_switch or self.graph.
+        # They will be recorded dynamically via record_host() upon ARP / packet-in.
 
     def _get_configured_link_attrs(self, u: str, v: str) -> Dict[str, Any]:
         """Look up configured bandwidth, delay, and queue size for link (u, v)."""
@@ -401,6 +404,63 @@ class TopologyTracker:
         """Return True if (switch, port) is known to face a host."""
         return (switch, int(port)) in self.host_ports
 
+    def record_host(
+        self,
+        name: Optional[str],
+        ip: str,
+        switch: str,
+        port: int,
+        mac: Optional[str] = None,
+    ) -> str:
+        """Record or update a host with its attachment point, IP, and MAC.
+
+        Parameters
+        ----------
+        name:
+            Host name (e.g. 'h1'). If None, resolved from configured_host_names or derived.
+        ip:
+            IPv4 address.
+        switch:
+            Ingress switch name.
+        port:
+            Ingress port on switch.
+        mac:
+            MAC address.
+
+        Returns
+        -------
+        str
+            The resolved host name.
+        """
+        resolved_name = name or self.configured_host_names.get(ip)
+        if not resolved_name:
+            if ip.startswith("10.0.0."):
+                resolved_name = f"h{ip.split('.')[-1]}"
+            else:
+                resolved_name = f"h_{ip.replace('.', '_')}"
+
+        self.host_switch[resolved_name] = switch
+        self.host_port[resolved_name] = int(port)
+        self.host_ip[resolved_name] = ip
+        if mac is not None:
+            self.host_mac[resolved_name] = mac
+        self.switch_ports.setdefault(switch, {})[resolved_name] = int(port)
+        self.host_ports.add((switch, int(port)))
+
+        # Update NetworkX graph
+        self.graph.add_node(resolved_name, kind="host", ip=ip, switch=switch, mac=mac)
+        if not self.graph.has_edge(resolved_name, switch):
+            self.graph.add_edge(
+                resolved_name,
+                switch,
+                bw_mbps=self.default_host_bw,
+                delay_ms=self.default_host_delay,
+                max_queue_size=self.default_host_queue,
+                kind="host",
+                link=f"{resolved_name}--{switch}",
+            )
+        return resolved_name
+
     def add_host(
         self,
         host: str,
@@ -410,28 +470,15 @@ class TopologyTracker:
         mac: Optional[str] = None,
     ) -> None:
         """Associate a host with its ingress switch and port."""
-        self.host_switch[host] = switch
-        self.host_ip[host] = ip
-        if mac is not None:
-            self.host_mac[host] = mac
         if port is not None:
-            self.host_port[host] = int(port)
-            self.switch_ports.setdefault(switch, {})[host] = int(port)
-            self.host_ports.add((switch, int(port)))
-
-        # Graph node for host
-        if not self.graph.has_node(host):
-            self.graph.add_node(host, kind="host", ip=ip, switch=switch, mac=mac)
-        if not self.graph.has_edge(host, switch):
-            self.graph.add_edge(
-                host,
-                switch,
-                bw_mbps=self.default_host_bw,
-                delay_ms=self.default_host_delay,
-                max_queue_size=self.default_host_queue,
-                kind="host",
-                link=f"{host}--{switch}",
-            )
+            self.record_host(host, ip=ip, switch=switch, port=port, mac=mac)
+        else:
+            self.host_switch[host] = switch
+            self.host_ip[host] = ip
+            if mac is not None:
+                self.host_mac[host] = mac
+            if not self.graph.has_node(host):
+                self.graph.add_node(host, kind="host", ip=ip, switch=switch, mac=mac)
 
     # ------------------------------------------------------------- Queries --
     def dpid_of(self, switch: str) -> Optional[int]:
@@ -510,6 +557,9 @@ class TopologyTracker:
             - ``bw_mbps``: Maximizes bottleneck bandwidth (reciprocal cost).
         """
         g = self.full_graph()
+        if not g.has_node(source) or not g.has_node(dest):
+            return []
+
         for u, v, data in g.edges(data=True):
             if weight == "hops":
                 data["_w"] = 1.0
@@ -577,6 +627,12 @@ class TopologyTracker:
 
     def export_topology_dict(self) -> Dict[str, Any]:
         """Return full JSON-serializable dictionary of live topology state."""
+        paths = []
+        try:
+            paths = self.k_shortest_paths("h1", "h4", k=3)
+        except Exception as exc:
+            LOGGER.debug("could not compute paths_h1_h4: %s", exc)
+
         return {
             "switches": sorted(self.known_switches()),
             "switch_dpid": {k: int(v) for k, v in sorted(self.switch_dpid.items())},
@@ -601,7 +657,7 @@ class TopologyTracker:
                 }
                 for l in sorted(self.links.values(), key=lambda x: x.canonical_name)
             ],
-            "paths_h1_h4": self.k_shortest_paths("h1", "h4", k=3),
+            "paths_h1_h4": paths,
             "timestamp": time.time(),
         }
 

@@ -684,6 +684,19 @@ class TelemetryCollector:
             rate_rec = self.latest_port_rates.get((src_sw, src_p))
             probe_tracker = self.probe_trackers.get((src_sw, dst_sw))
 
+            # Skip links with no rate record yet. A rate needs two counter
+            # readings, so during the first poll after a switch connects there is
+            # legitimately nothing to report. Emitting a row here fabricates a
+            # zero-valued observation flagged is_stale=True -- one per link per
+            # run -- and the labeller treats those fakes as real samples. That
+            # single warm-up artefact was a 7.1% stale fraction in every run.
+            if rate_rec is None:
+                LOGGER.debug(
+                    "%s:%d has no rate record yet (first poll); skipping row",
+                    src_sw, src_p,
+                )
+                continue
+
             tx_rate = rate_rec.tx_rate_mbps if rate_rec else 0.0
             rx_rate = rate_rec.rx_rate_mbps if rate_rec else 0.0
             tx_pps = rate_rec.tx_packet_rate_pps if rate_rec else 0.0

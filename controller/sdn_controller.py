@@ -25,9 +25,12 @@ always discovered by packet-in rather than assumed.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sys
 import time
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from ryu.base import app_manager
@@ -169,6 +172,11 @@ class SdnController(app_manager.RyuApp):
             "flows_installed": 0,
             "links_discovered": 0,
         }
+        # Per-switch counters for LLDP tracking
+        self.switch_lldp_sent: Dict[str, int] = defaultdict(int)
+        self.switch_lldp_recv: Dict[str, int] = defaultdict(int)
+        self.switch_links_added: Dict[str, int] = defaultdict(int)
+
         self.discovery_enabled = bool(self.config.get("discovery.enabled", True))
         self.discovery_thread = hub.spawn(self._discovery_loop) if self.discovery_enabled else None
 
@@ -191,13 +199,20 @@ class SdnController(app_manager.RyuApp):
     def _switch_name(self, datapath: Any) -> str:
         """Return the Mininet switch name for a datapath.
 
-        Falls back to the raw dpid when the port map cannot resolve it, so the
-        controller still functions (single-switch, discovery-less setups).
+        Falls back to the raw dpid or s<dpid> when unmapped.
         """
         resolved = None
-        if self.port_map is not None:
+        if hasattr(self, "topology") and self.topology is not None:
+            resolved = self.topology.switch_of_dpid(datapath.id)
+        if resolved is None and hasattr(self, "port_map") and self.port_map is not None:
             resolved = self.port_map.switch_of_dpid(datapath.id)
-        return resolved or self.dpid_to_name.get(datapath.id) or str(datapath.id)
+        if resolved:
+            return resolved
+        if hasattr(self, "dpid_to_name") and datapath.id in self.dpid_to_name:
+            return self.dpid_to_name[datapath.id]
+        if isinstance(datapath.id, int):
+            return f"s{datapath.id}"
+        return str(datapath.id)
 
     # ------------------------------------------------------ ARP resolution --
     def _all_switches_ready(self) -> bool:
@@ -320,6 +335,38 @@ class SdnController(app_manager.RyuApp):
             print(f"WARNING: could not configure logging: {exc}", file=sys.stderr)
 
     # --------------------------------------------------------- connections --
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev: Any) -> None:
+        """Handle switch features reply and log datapath info."""
+        datapath = ev.msg.datapath
+        dpid = ev.msg.datapath_id
+        switch = self._switch_name(datapath)
+        LOGGER.info(
+            "[SWITCH_FEATURES] datapath 0x%x (switch %s) connected; capabilities=0x%x",
+            dpid, switch, ev.msg.capabilities,
+        )
+
+    @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, [CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def port_desc_stats_reply_handler(self, ev: Any) -> None:
+        """Handle port description stats reply to discover and log physical switch ports."""
+        datapath = ev.msg.datapath
+        switch = self._switch_name(datapath)
+        port_list = []
+        for port in ev.msg.body:
+            port_no = port.port_no
+            if port_no <= datapath.ofproto.OFPP_MAX:
+                name_str = (
+                    port.name.decode("utf-8", "ignore")
+                    if isinstance(port.name, bytes)
+                    else str(port.name)
+                )
+                port_list.append((port_no, name_str))
+        ports_str = ", ".join(f"{p}:{n}" for p, n in sorted(port_list))
+        LOGGER.info(
+            "[PORT_DESC] switch %s (dpid=%s) ports: [%s]",
+            switch, datapath.id, ports_str,
+        )
+
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, CONFIG_DISPATCHER])
     def state_change_handler(self, ev: Any) -> None:
         """Track datapath connections and reconnects.
@@ -467,8 +514,19 @@ class SdnController(app_manager.RyuApp):
             self._drop_packet(msg)
             return
 
+        self.switch_lldp_recv[dst_switch] += 1
+        LOGGER.info(
+            "[LLDP_RECV] %s: port %d <- from remote switch %s port %d (switch_total_recv=%d)",
+            dst_switch, dst_port, src_switch, src_port, self.switch_lldp_recv[dst_switch],
+        )
+
         link = self.topology.add_link(src_switch, src_port, dst_switch, dst_port)
         link.last_seen = time.monotonic()
+        self.switch_links_added[dst_switch] += 1
+        LOGGER.info(
+            "[LINK_ADDED] %s:%d <-> %s:%d (switch_total=%d, total_links=%d)",
+            dst_switch, dst_port, src_switch, src_port, self.switch_links_added[dst_switch], len(self.topology.links),
+        )
         self.telemetry.register_link(
             src_switch, src_port, dst_switch, dst_port, link.bw_mbps, link.delay_ms
         )
@@ -585,8 +643,9 @@ class SdnController(app_manager.RyuApp):
                 )
                 self._sync_topology_file()
         else:
-            LOGGER.info("%s: port %d UP -> probing", switch, port_no)
-            self._send_lldp_probe_on_port(datapath, port_no)
+            if port_no <= ofproto_v1_3.OFPP_MAX and port_no != ofproto_v1_3.OFPP_LOCAL:
+                LOGGER.info("%s: port %d UP -> probing", switch, port_no)
+                self._send_lldp_probe_on_port(datapath, port_no)
 
     def _send_lldp_probe_on_port(self, datapath: Any, port_no: int) -> None:
         """Send an LLDP probe on port_no unless it is a host-facing or internal port."""
@@ -618,6 +677,11 @@ class SdnController(app_manager.RyuApp):
                 data=lldp_data,
             )
             datapath.send_msg(out)
+            self.switch_lldp_sent[switch] += 1
+            LOGGER.info(
+                "[LLDP_SENT] %s: port %d -> dpid=%s (switch_total_sent=%d)",
+                switch, port_no, datapath.id, self.switch_lldp_sent[switch],
+            )
         except Exception as exc:
             LOGGER.debug("error sending LLDP probe on %s:%d: %s", switch, port_no, exc)
 
@@ -656,7 +720,13 @@ class SdnController(app_manager.RyuApp):
     def _sync_topology_file(self) -> None:
         """Sync in-memory topology state to data/topology.json and data/portmap.json."""
         try:
-            top_path = "data/topology.json"
+            # Both output paths come from config. Previously only the port map
+            # was configurable while the topology file was hardcoded to
+            # data/topology.json, which made this method untestable without
+            # writing into the repository and broke the no-magic-paths rule.
+            top_path = str(
+                self.config.get("controller.topology_file_path", "data/topology.json")
+            )
             os.makedirs(os.path.dirname(os.path.abspath(top_path)), exist_ok=True)
             tmp_path = f"{top_path}.tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -673,7 +743,7 @@ class SdnController(app_manager.RyuApp):
                     link.dst_switch, link.dst_port, link.src_switch, link.src_port, link.bw_mbps, link.delay_ms
                 )
         except Exception as exc:
-            LOGGER.debug("could not sync topology file: %s", exc)
+            LOGGER.error("could not sync topology file: %s", exc, exc_info=True)
 
     def _request_all_port_stats(self) -> None:
         """Send OFPPortStatsRequest to all currently connected switches."""
@@ -762,6 +832,32 @@ class SdnController(app_manager.RyuApp):
             hub.sleep(interval)
 
     # ----------------------------------------------------------------- ARP --
+    def _learn_host(
+        self,
+        ip: str,
+        mac: str,
+        switch: str,
+        port: int,
+        source_type: str = "packet",
+    ) -> None:
+        """Dynamically learn host attachment (ip, mac, switch, port) and update graph."""
+        if not ip or not mac or not switch or port is None:
+            return
+        known = self.arp.table.lookup_ip(ip)
+        self.mac_to_location[mac] = (switch, port)
+        self.arp.table.learn(ip, mac, switch, port)
+        h_name = self.topology.record_host(None, ip=ip, switch=switch, port=port, mac=mac)
+        self._sync_topology_file()
+        if known is None or known.mac != mac:
+            LOGGER.info(
+                "%s: learned host %s (%s -> %s) on port %d (from %s)",
+                switch, h_name, ip, mac, port, source_type,
+            )
+            self.event_log.emit(
+                "host_resolved", ip=ip, mac=mac,
+                switch=switch, port=port, host=h_name,
+            )
+
     def _handle_arp(
         self, datapath: Any, msg: Any, pkt: Any, eth: Any
     ) -> None:
@@ -783,26 +879,7 @@ class SdnController(app_manager.RyuApp):
             src_ip, src_mac = arp_src_ip(arp_pkt), arp_src_mac(arp_pkt)
             if src_ip and src_mac:
                 in_port = msg.match["in_port"]
-                known = self.arp.table.lookup_ip(src_ip)
-                self.mac_to_location[src_mac] = (switch, in_port)
-                self.arp.table.learn(src_ip, src_mac, switch, in_port)
-                for h_name, h_ip in list(self.topology.host_ip.items()):
-                    if h_ip == src_ip:
-                        self.topology.add_host(h_name, src_ip, switch, port=in_port, mac=src_mac)
-                        break
-                else:
-                    h_name = f"h_{src_ip.replace('.', '_')}"
-                    self.topology.add_host(h_name, src_ip, switch, port=in_port, mac=src_mac)
-                self._sync_topology_file()
-                if known is None or known.mac != src_mac:
-                    LOGGER.info(
-                        "%s: learned %s -> %s (from ARP reply on port %d)",
-                        switch, src_ip, src_mac, in_port,
-                    )
-                    self.event_log.emit(
-                        "host_resolved", ip=src_ip, mac=src_mac,
-                        switch=switch, port=in_port,
-                    )
+                self._learn_host(src_ip, src_mac, switch, in_port, source_type="ARP reply")
             self._drop_packet(msg)
             return
 
@@ -812,18 +889,20 @@ class SdnController(app_manager.RyuApp):
             self._drop_packet(msg)
             return
 
+        sender_ip = arp_src_ip(arp_pkt)
+        sender_mac = eth.src
+        in_port = msg.match["in_port"]
+        if sender_ip and sender_mac:
+            self._learn_host(sender_ip, sender_mac, switch, in_port, source_type="ARP request")
+
         self.counters["arp_requests"] += 1
         decision = self.arp.handle_request(
-            sender_ip=arp_src_ip(arp_pkt),
-            sender_mac=eth.src,
+            sender_ip=sender_ip,
+            sender_mac=sender_mac,
             target_ip=arp_dst_ip(arp_pkt),
             switch=switch,
-            in_port=msg.match["in_port"],
+            in_port=in_port,
         )
-
-        # Learning the sender's location benefits forwarding as well: the ARP
-        # request is the only guaranteed sighting of a host's ingress port.
-        self.mac_to_location[eth.src] = (switch, msg.match["in_port"])
 
         if decision.action != "reply" or decision.reply_target is None:
             # 'learn' (target unknown) or 'ignore': drop, do not flood.
@@ -904,9 +983,12 @@ class SdnController(app_manager.RyuApp):
         """
         switch = self._switch_name(datapath)
         in_port = msg.match["in_port"]
-        # Learning the source here (not only from ARP) keeps forwarding working
-        # for traffic whose ARP was answered by a peer rather than by us.
-        self.mac_to_location[eth.src] = (switch, in_port)
+        from ryu.lib.packet import ipv4
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ipv4_pkt is not None:
+            self._learn_host(ipv4_pkt.src, eth.src, switch, in_port, source_type="IPv4 packet")
+        else:
+            self.mac_to_location[eth.src] = (switch, in_port)
 
         dst = self.mac_to_location.get(eth.dst)
         if dst is None:
@@ -973,14 +1055,18 @@ class SdnController(app_manager.RyuApp):
             The output port on each switch along the path, or None when the
             path cannot be resolved (caller must drop the packet).
         """
-        if self.port_map is None or self.flows is None:
+        if self.flows is None:
+            return None
+        # Primary provider is live dynamic TopologyTracker; fallback to port_map if present
+        provider = self.topology if (hasattr(self, "topology") and self.topology is not None and self.topology.links) else self.port_map
+        if provider is None:
             LOGGER.warning(
-                "no port map available; cannot forward %s->%s across switches",
+                "no topology or port map available; cannot forward %s->%s across switches",
                 src_switch, dst_switch,
             )
             return None
         try:
-            path = self.port_map.shortest_switch_path(src_switch, dst_switch)
+            path = provider.shortest_switch_path(src_switch, dst_switch)
         except Exception as exc:
             LOGGER.warning("no path %s -> %s: %s", src_switch, dst_switch, exc)
             return None
@@ -992,7 +1078,9 @@ class SdnController(app_manager.RyuApp):
             if index == 0:
                 in_port = first_hop_port if first_hop_port is not None else None
             else:
-                in_port = self.port_map.port(node, path[index - 1])
+                in_port = provider.port(node, path[index - 1])
+                if in_port is None and self.port_map is not None:
+                    in_port = self.port_map.port(node, path[index - 1])
             if in_port is None:
                 LOGGER.warning("path %s: no ingress port on %s", path, node)
                 return None
@@ -1003,10 +1091,11 @@ class SdnController(app_manager.RyuApp):
                     LOGGER.warning("path %s: no egress port for %s", path, dst_mac)
                     return None
             else:
-                try:
-                    out_port = self.port_map.require_port(node, path[index + 1])
-                except KeyError as exc:
-                    LOGGER.warning("%s", exc)
+                out_port = provider.port(node, path[index + 1])
+                if out_port is None and self.port_map is not None:
+                    out_port = self.port_map.port(node, path[index + 1])
+                if out_port is None:
+                    LOGGER.warning("path %s: no egress port on %s facing %s", path, node, path[index + 1])
                     return None
 
             spec = FlowSpec(

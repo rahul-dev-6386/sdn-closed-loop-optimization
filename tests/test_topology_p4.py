@@ -235,3 +235,73 @@ def test_lldp_parse_non_lldp_returns_none() -> None:
     """Verify that non-LLDP frames are safely ignored by parse_lldp_packet."""
     assert parse_lldp_packet(b"not a valid lldp packet") is None
     assert parse_lldp_packet(b"") is None
+
+
+def test_dynamic_host_record_and_paths() -> None:
+    """Verify dynamic host attachment via record_host without pre-existing port map."""
+    cfg = load_config()
+    t = TopologyTracker(cfg)
+    t.add_link("s1", 1, "s2", 1)
+    t.add_link("s1", 2, "s3", 1)
+    t.add_link("s2", 2, "s4", 1)
+    t.add_link("s3", 2, "s4", 2)
+
+    # Before hosts are discovered, hosts dict is empty and paths_h1_h4 is safe empty list
+    d = t.export_topology_dict()
+    assert d["hosts"] == {}
+    assert d["paths_h1_h4"] == []
+
+    # Dynamic host learning via ARP
+    h1 = t.record_host(None, ip="10.0.0.1", switch="s1", port=3, mac="00:00:00:00:00:01")
+    assert h1 == "h1"
+    h4 = t.record_host(None, ip="10.0.0.4", switch="s4", port=3, mac="00:00:00:00:00:02")
+    assert h4 == "h4"
+
+    d2 = t.export_topology_dict()
+    assert "h1" in d2["hosts"]
+    assert "h4" in d2["hosts"]
+    assert d2["hosts"]["h1"]["switch"] == "s1"
+    assert d2["hosts"]["h1"]["port"] == 3
+    assert d2["hosts"]["h4"]["switch"] == "s4"
+    assert d2["hosts"]["h4"]["port"] == 3
+
+    assert len(d2["paths_h1_h4"]) == 2
+    assert ["h1", "s1", "s2", "s4", "h4"] in d2["paths_h1_h4"]
+    assert ["h1", "s1", "s3", "s4", "h4"] in d2["paths_h1_h4"]
+
+
+def test_sdn_controller_sync_topology_file(tmp_path: Any) -> None:
+    """Verify that SdnController._sync_topology_file writes valid data/topology.json."""
+    import json
+    import os
+    from common.config import Config, load_config
+    from controller.sdn_controller import SdnController
+
+    raw = dict(load_config()._data)
+    raw["discovery"] = dict(raw.get("discovery", {}))
+    raw["discovery"]["enabled"] = False
+    raw["telemetry"] = dict(raw.get("telemetry", {}))
+    raw["telemetry"]["enabled"] = False
+    # Point BOTH output paths at tmp_path. The test previously read and wrote
+    # the repository's real data/topology.json, so it (a) failed whenever a live
+    # run had left a wider topology there, and (b) needed write access to files
+    # that root-owned live runs create.
+    raw["controller"] = dict(raw.get("controller", {}))
+    raw["controller"]["topology_file_path"] = str(tmp_path / "topology.json")
+    raw["controller"]["port_map_path"] = str(tmp_path / "portmap.json")
+    cfg = Config(raw)
+
+    controller = SdnController(config=cfg)
+    controller.topology.add_link("s1", 1, "s2", 1)
+    controller.topology.record_host("h1", ip="10.0.0.1", switch="s1", port=3, mac="00:00:00:00:00:01")
+    controller._sync_topology_file()
+
+    topo_file = tmp_path / "topology.json"
+    assert os.path.isfile(topo_file)
+    with open(topo_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    assert len(data["links"]) == 1
+    assert "h1" in data["hosts"]
+    # Nothing may leak into the repository's data/ directory.
+    assert os.path.isfile(tmp_path / "portmap.json")
+

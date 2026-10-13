@@ -76,6 +76,9 @@ controller:
   # `make portmap`; P4 replaces this side-channel with live LLDP/OFPPortDesc
   # discovery so no file is needed at runtime.
   port_map_path: data/portmap.json
+  # Where the discovered topology is published (P4). Config-driven so the
+  # sync routine can be tested without writing into the repository.
+  topology_file_path: data/topology.json
   # Identity the controller uses when it originates ARP itself (proactive MAC
   # resolution). proxy_ip must be inside every host subnet.
   proxy_mac: "0e:00:00:00:00:01"
@@ -126,6 +129,12 @@ telemetry:
 # -----------------------------------------------------------------------------
 # Machine learning (P6/P7/P8). Predicts FUTURE congestion per link.
 # -----------------------------------------------------------------------------
+# Where the collector writes the raw (unlabelled) and labelled telemetry that
+# P7 trains from. P6 labels the raw file into the labelled one.
+dataset:
+  raw_csv_path: data/telemetry_live.csv
+  labeled_csv_path: data/telemetry_live_labeled.csv
+
 ml:
   model_path: results/model.joblib
   features_path: results/feature_importance.png

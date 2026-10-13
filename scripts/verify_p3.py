@@ -358,10 +358,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         # ---------------------------------------------------------- setup ---
         section("1. Start controller, then build the topology")
-        # Remove any stale port map so a load failure is visible rather than
-        # masked by a previous run's file.
+        # Remove any stale port map so dynamic discovery is tested cleanly.
         if os.path.exists(port_map_path):
             os.remove(port_map_path)
+        check("data/portmap.json does NOT exist at startup (pure live discovery)", not os.path.exists(port_map_path))
 
         topo.build()
         h1 = topo.net.get(h1_name)
@@ -370,12 +370,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                                  capture_output=True, text=True).stdout.split()
         check("all 4 OVS bridges present", len(bridges) == 4, f"{sorted(bridges)}")
 
-        # Export port adjacency BEFORE starting ryu: the controller loads it at
-        # startup, and without it every cross-switch packet is dropped.
-        topo.export_portmap().save(port_map_path)
-        print(portmap_mod.PortMap.load(port_map_path).describe())
-        ok(f"port map exported to {port_map_path}")
-
         if not ryu.start():
             bad("ryu-manager failed to start")
             print(ryu.tail(30))
@@ -383,8 +377,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         ok(f"ryu-manager listening on 127.0.0.1:{args.controller_port}")
         info(f"expected controller path: {' -> '.join(expected_path)}")
 
+        # Allow initial switch connections and discovery probes
+        time.sleep(2.0)
+
         # --------------------------------------------------- 2. pingall ----
         section("2. pingall must show 0% loss")
+        # Warm up first with a ping so the controller discovers host attachment ports dynamically
+        info("warmup ping between h1 and h4 to allow dynamic ARP learning...")
+        topo.net.ping([h1, h4])
+        time.sleep(0.5)
+
         recv, sent, loss, _ = pingall(topo.net)
         info(f"pingall: {recv}/{sent} received")
         check("pingall 0% loss", loss == 0.0, f"{loss:.1f}% loss ({recv}/{sent})")
