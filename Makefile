@@ -21,7 +21,7 @@ CONFIG     ?= config.yaml
         snapshot snapshot-all snapshot-list snapshot-image \
         dataset train train-quick verify-p7 \
         experiments experiments-dry experiments-resume verify-p10 \
-        figures verify-p11 pipeline demo demo-control \
+        figures verify-p11 pipeline pdf demo demo-control \
         ping check-native mn-clean
 
 help: ## Show this help
@@ -202,6 +202,9 @@ figures:     ## P11 -- tables, figures and RESULTS.md from results/experiments.c
 	@echo "P11 (analysis): not implemented yet -- say 'start P11'"
 pipeline:    ## Run the remaining P7->P13 pipeline in dependency order (root)
 	bash scripts/run_pipeline.sh
+
+pdf:         ## Export PROGRESS_REPORT.md to docs/PROGRESS_REPORT.pdf
+	$(PY) scripts/export_pdf.py PROGRESS_REPORT.md -o docs/PROGRESS_REPORT.pdf
 
 demo:        ## P13 -- end-to-end demonstration
 	@echo "P13 (demo): not implemented yet -- say 'start P13'"

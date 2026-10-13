@@ -29,3 +29,6 @@ data/sdn.db*
 
 # Collection progress marker (rewritten in place by ml/collect_dataset.py)
 data/dataset_progress.json
+
+# Generated PDF exports (regenerate with `make pdf`)
+docs/*.pdf

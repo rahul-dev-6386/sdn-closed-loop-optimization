@@ -1,9 +1,9 @@
 # Project Progress Report
 
-**Project:** AI-Driven SDN Traffic Optimization and Congestion Avoidance
-**Report date:** 13 October 2026
-**Repository:** `/home/rahul/sdn_project`
-**Latest commit:** `adc6eb1` — *Train on real data; find a duplicate-measurement bug and a leakage-prone split*  
+**Project:** AI-Driven SDN Traffic Optimization and Congestion Avoidance<br>
+**Report date:** 13 October 2026<br>
+**Repository:** `/home/rahul/sdn_project`<br>
+**Latest commit:** `adc6eb1` — *Train on real data; find a duplicate-measurement bug and a leakage-prone split*<br>
 **Note:** the traffic-generator rewrite in §5.3 is implemented but **not yet committed** — it lands with the verification in step 1.
 
 ---
@@ -28,7 +28,7 @@ evidence of the claim, this report says so rather than banking it.
 
 ### Success criteria
 
-| # | Criterion | How it is judged |
+| No. | Criterion | How it is judged |
 |---|---|---|
 | 1 | Loop-safe controller, zero packet loss | P3 acceptance: pingall, broadcast-storm check, flow inspection |
 | 2 | Real telemetry, not synthesised | P5 acceptance against a live fabric |
