@@ -1,0 +1,33 @@
+........................................................................ [ 13%]
+........................................................................ [ 27%]
+........................................................................ [ 41%]
+........................................................................ [ 55%]
+........................................................................ [ 69%]
+........................................................................ [ 83%]
+........................................................................ [ 97%]
+...............                                                          [100%]
+=============================== warnings summary ===============================
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+  /home/rahul/sdn_project/.venv/lib/python3.9/site-packages/matplotlib/_fontconfig_pattern.py:88: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+tests/test_report_p11.py::test_generate_report_writes_everything
+  /home/rahul/sdn_project/.venv/lib/python3.9/site-packages/matplotlib/_fontconfig_pattern.py:92: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+tests/test_report_p11.py::test_generate_report_writes_everything
+  /home/rahul/sdn_project/.venv/lib/python3.9/site-packages/matplotlib/_mathtext.py:45: PyparsingDeprecationWarning: 'enablePackrat' deprecated - use 'enable_packrat'
+    ParserElement.enablePackrat()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+519 passed, 13 warnings in 10.42s

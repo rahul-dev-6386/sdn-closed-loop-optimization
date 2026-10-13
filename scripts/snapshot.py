@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
@@ -40,11 +41,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+LOGGER = logging.getLogger("snapshot")
+
 ROOT = Path(__file__).resolve().parents[1]
 SNAP_DIR = ROOT / "results" / "snapshots"
 LOG_DIR = SNAP_DIR / "logs"
 MANIFEST = SNAP_DIR / "MANIFEST.json"
 PROGRESS_MD = SNAP_DIR / "PROGRESS.md"
+HISTORY = SNAP_DIR / "HISTORY.jsonl"
 
 SUMMARY_RE = re.compile(r"SUMMARY:\s*(\d+)\s*passed,\s*(\d+)\s*failed")
 PASSED_RE = re.compile(r"^\s*\[PASS\]", re.MULTILINE)
@@ -367,9 +371,66 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     write_manifest(manifest)
     PROGRESS_MD.write_text(render_progress(manifest), encoding="utf-8")
+    _append_history(manifest, git_commit())
     print(f"\nmanifest: {MANIFEST.relative_to(ROOT)}")
     print(f"progress: {PROGRESS_MD.relative_to(ROOT)}")
+    print(f"history:  {_relative(HISTORY)}")
     return 0
+
+
+def _append_history(manifest: Dict[str, Any], commit: str) -> None:
+    """Append one snapshot to the run history.
+
+    ``MANIFEST.json`` only ever holds the latest run, which is the right
+    behaviour for a ledger but means a progress picture has nothing to show
+    *growth*. One JSON object per snapshot makes the trend visible, and keeps
+    every past measurement rather than overwriting it.
+
+    A history write must never fail the snapshot: the evidence in MANIFEST.json
+    has already been captured at this point, and losing that because an
+    append-only log could not be written would be the wrong trade.
+    """
+    try:
+        SNAP_DIR.mkdir(parents=True, exist_ok=True)
+        totals = {"passed": 0, "failed": 0, "targets": 0, "passing": 0}
+        for record in manifest.get("targets", {}).values():
+            if record.get("status") not in {"pass", "fail"}:
+                continue
+            totals["targets"] += 1
+            totals["passed"] += int(record.get("passed") or 0)
+            totals["failed"] += int(record.get("failed") or 0)
+            if record.get("status") == "pass":
+                totals["passing"] += 1
+        with HISTORY.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "ran_at": manifest.get("updated_at"),
+                "commit": commit,
+                **totals,
+                "statuses": {k: v.get("status")
+                             for k, v in sorted(manifest.get("targets", {}).items())},
+            }) + "\n")
+    except OSError as exc:  # pragma: no cover - disk/permission dependent
+        LOGGER.warning("could not append snapshot history: %s", exc)
+
+
+def load_history() -> List[Dict[str, Any]]:
+    """Read every recorded snapshot, oldest first.
+
+    Malformed lines are skipped rather than raising: a truncated final line from
+    an interrupted run must not make the history unreadable.
+    """
+    if not HISTORY.is_file():
+        return []
+    records: List[Dict[str, Any]] = []
+    for line in HISTORY.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
 
 
 if __name__ == "__main__":

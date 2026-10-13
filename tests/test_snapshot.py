@@ -263,3 +263,73 @@ def test_corrupt_manifest_does_not_crash() -> None:
         assert snap.load_manifest()["targets"] == {}
     finally:
         monkey.undo()
+
+
+# --------------------------------------------------------------- history --
+def test_history_is_appended_not_overwritten(tmp_path: Path, monkeypatch) -> None:
+    """MANIFEST holds only the latest run; the history is what shows growth."""
+    manifest_path = tmp_path / "MANIFEST.json"
+    history = tmp_path / "HISTORY.jsonl"
+    monkeypatch.setattr(snap, "MANIFEST", manifest_path)
+    monkeypatch.setattr(snap, "PROGRESS_MD", tmp_path / "PROGRESS.md")
+    monkeypatch.setattr(snap, "HISTORY", history)
+
+    for n in (10, 20):
+        manifest = {"targets": {"unit": {"status": "pass", "passed": n,
+                                         "failed": 0}}}
+        manifest["updated_at"] = f"2026-01-0{n // 10 + 1}"
+        snap.write_manifest(manifest)
+        snap._append_history(manifest, "abc123")
+
+    records = snap.load_history()
+    assert len(records) == 2
+    assert [r["passed"] for r in records] == [10, 20], (
+        "each snapshot must remain a separate record, not overwrite the last"
+    )
+    assert all(r["commit"] == "abc123" for r in records)
+
+
+def test_history_counts_pass_and_fail_separately(tmp_path: Path,
+                                                 monkeypatch) -> None:
+    history = tmp_path / "HISTORY.jsonl"
+    monkeypatch.setattr(snap, "HISTORY", history)
+    monkeypatch.setattr(snap, "SNAP_DIR", tmp_path)
+    manifest = {"targets": {
+        "a": {"status": "pass", "passed": 5, "failed": 0},
+        "b": {"status": "fail", "passed": 2, "failed": 1},
+        "c": {"status": "planned"},          # not measured: excluded
+        "d": {"status": "skipped"},          # not measured: excluded
+    }}
+    snap._append_history(manifest, "sha")
+    record = snap.load_history()[0]
+    assert record["targets"] == 2, "only measured targets count"
+    assert record["passing"] == 1
+    assert record["passed"] == 7 and record["failed"] == 1
+
+
+def test_a_missing_history_reads_as_empty(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(snap, "HISTORY", tmp_path / "absent.jsonl")
+    assert snap.load_history() == []
+
+
+def test_a_truncated_history_line_is_skipped(tmp_path: Path,
+                                             monkeypatch) -> None:
+    """An interrupted append must not make the whole history unreadable."""
+    history = tmp_path / "HISTORY.jsonl"
+    history.write_text('{"passed": 1, "failed": 0}\n{"passed": 2, "faile')
+    monkeypatch.setattr(snap, "HISTORY", history)
+    records = snap.load_history()
+    assert len(records) == 1
+    assert records[0]["passed"] == 1
+
+
+def test_history_write_failure_does_not_fail_the_snapshot(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """The manifest is already written; losing that over an append-only log
+    would be the wrong trade."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    monkeypatch.setattr(snap, "HISTORY", blocked)   # a directory: open() fails
+    monkeypatch.setattr(snap, "SNAP_DIR", tmp_path)
+    snap._append_history({"targets": {}}, "sha")     # must not raise

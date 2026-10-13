@@ -1,0 +1,52 @@
+Phase 11 acceptance: analysis restraint and report integrity
+
+[Statistics]
+  [PASS] identical groups have zero effect size
+  [PASS] well-separated groups have a large effect size -- d=5.51
+  [PASS] one observation yields no effect size
+  [PASS] zero spread yields no effect size, not infinity -- any difference would be infinitely large, so a number is a fiction
+  [PASS] the interval brackets the mean
+  [PASS] widely separated groups do not overlap
+  [PASS] identical groups overlap
+
+[Restraint: noise is not a result]
+  [PASS] a 0.5ms difference against 3ms of noise is reported as overlapping -- verdict=overlapping with best
+  [PASS] no mode is claimed separated when nothing separates
+  [PASS] the lowest mean is still reported, for transparency -- best=ml_aware
+
+[Restraint: a real difference IS reported]
+  [PASS] a 75ms difference against negligible noise is separated -- best=ml_aware
+
+[Restraint: absences are not zeros]
+  [PASS] an unmeasured metric yields no comparison, not a tie
+  [PASS] one repetition per mode yields no verdict
+  [PASS] reroute_count is excluded from verdicts -- it is a cost, not a quality
+
+[Restraint: degradation is disclosed]
+  [PASS] a clean sweep audits clean
+  [PASS] a run that fell back is flagged -- 1 offending run(s)
+  [PASS] the as-labelled fraction is reported -- so the results table can caveat its own headline
+
+[Report content]
+  [PASS] the document has an explicit unsupported list
+  [PASS] the document explains how to read its own table
+  [PASS] a starred best-mean is explicitly not called a win
+  [PASS] means are always shown with their spread
+  [PASS] the document names what would resolve the ambiguity
+  [PASS] a degraded sweep is disclosed in the document
+  [PASS] the document explains why degraded runs cannot be compared
+  [PASS] an unmeasured metric renders as absent, not zero
+
+[Report artefacts]
+  [PASS] RESULTS.md is written
+  [PASS] summary CSV is written
+  [PASS] analysis JSON records the run count -- 10
+  [PASS] analysis JSON includes the degradation audit
+  [PASS] figures are attempted -- 4 rendered (0 is fine without matplotlib)
+  [PASS] summary CSV carries per-metric means -- 26 columns
+  [PASS] summary CSV carries spreads alongside means -- a mean without a spread invites over-reading noise
+
+[Real sweep]
+  [SKIP] sweep analysis -- results/experiments.csv absent
+
+SUMMARY: 32 passed, 0 failed

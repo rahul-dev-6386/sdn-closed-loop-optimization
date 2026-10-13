@@ -18,7 +18,7 @@ CONFIG     ?= config.yaml
         topo topo-graph verify-p2 controller verify-p3 portmap \
         topo-discovery verify-p4 verify-p4-live \
         api api-sudo dashboard dashboard-install verify-p12 \
-        snapshot snapshot-all snapshot-list \
+        snapshot snapshot-all snapshot-list snapshot-image \
         dataset train train-quick verify-p7 \
         experiments experiments-dry experiments-resume verify-p10 \
         figures verify-p11 demo demo-control \
@@ -105,6 +105,9 @@ snapshot-all: ## Capture every target including root-only ones
 
 snapshot-list: ## List snapshot targets
 	$(PY) scripts/snapshot.py --list
+
+snapshot-image: ## Render results/snapshots/progress.png from the ledger
+	$(PY) scripts/snapshot_image.py
 
 # -----------------------------------------------------------------------------
 # Later phases -- declared now so the interface is stable, implemented per phase.

@@ -1202,7 +1202,25 @@ analyse. A demo that can only ever succeed is not a demonstration.
 make snapshot          # non-root targets
 sudo make snapshot-all # everything, including root-only ones
 make snapshot-list     # show the catalogue
+make snapshot-image    # render progress.png from the ledger
 ```
+
+### The picture
+
+`make snapshot-image` renders `results/snapshots/progress.png`: one tile per
+phase showing what was measured, whether it passed and how many checks that was,
+plus a trend line across snapshot runs.
+
+The rule it enforces is that **a phase with no passing acceptance run is never
+shown as green.** Unverified phases render grey and read `NOT RUN` or
+`not built`; a failure is red. A summary that overstates is worse than no
+summary, and a progress picture that quietly showed unbuilt phases as working
+would undermine the entire ledger it is meant to summarise.
+
+`results/snapshots/HISTORY.jsonl` keeps one JSON record per snapshot run.
+`MANIFEST.json` deliberately holds only the latest run, which is right for a
+ledger but means nothing to show *growth* — the history is what makes the trend
+line possible.
 
 `scripts/snapshot.py` runs the **real** verification commands and records exit
 status, pass/fail counts, duration and the git commit into

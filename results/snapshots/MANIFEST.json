@@ -5,29 +5,29 @@
       "key": "unit",
       "phase": "--",
       "title": "Unit test suite",
-      "status": "fail",
-      "exit_code": 1,
-      "passed": 517,
-      "failed": 1,
+      "status": "pass",
+      "exit_code": 0,
+      "passed": 519,
+      "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:54+00:00",
-      "seconds": 11.3,
-      "log": "results/snapshots/logs/unit-20261013T093654Z.log"
+      "ran_at": "2026-10-13T09:40:55+00:00",
+      "seconds": 10.8,
+      "log": "results/snapshots/logs/unit-20261013T094055Z.log"
     },
     "p6": {
       "key": "p6",
       "phase": "P6",
       "title": "Dataset labelling + class balance",
-      "status": "fail",
-      "exit_code": 1,
-      "passed": 26,
-      "failed": 1,
+      "status": "pass",
+      "exit_code": 0,
+      "passed": 27,
+      "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:41+00:00",
+      "ran_at": "2026-10-13T09:40:44+00:00",
       "seconds": 0.3,
-      "log": "results/snapshots/logs/p6-20261013T093641Z.log"
+      "log": "results/snapshots/logs/p6-20261013T094044Z.log"
     },
     "p7": {
       "key": "p7",
@@ -53,9 +53,9 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:42+00:00",
-      "seconds": 0.4,
-      "log": "results/snapshots/logs/p8-20261013T093642Z.log"
+      "ran_at": "2026-10-13T09:40:18+00:00",
+      "seconds": 0.3,
+      "log": "results/snapshots/logs/p8-20261013T094018Z.log"
     },
     "p9": {
       "key": "p9",
@@ -67,9 +67,9 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:42+00:00",
+      "ran_at": "2026-10-13T09:40:18+00:00",
       "seconds": 0.4,
-      "log": "results/snapshots/logs/p9-20261013T093642Z.log"
+      "log": "results/snapshots/logs/p9-20261013T094018Z.log"
     },
     "p10": {
       "key": "p10",
@@ -95,11 +95,11 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:43+00:00",
+      "ran_at": "2026-10-13T09:40:19+00:00",
       "seconds": 0.7,
-      "log": "results/snapshots/logs/p11-20261013T093643Z.log"
+      "log": "results/snapshots/logs/p11-20261013T094019Z.log"
     }
   },
-  "commit": "676aa12",
-  "updated_at": "2026-10-13T09:36:54+00:00"
+  "commit": "061ab09",
+  "updated_at": "2026-10-13T09:40:55+00:00"
 }
