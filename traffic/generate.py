@@ -347,31 +347,96 @@ def run_profiled_load_on_hosts(
 
     flows = ramp_plan(profile, step_s, duration_s, unit_mbps)
     ports = sorted({flow.port for flow in flows})
+    print(f"[traffic] {len(flows)} flow(s), ports {ports}, "
+          f"profile {list(profile)}, duration {duration_s}s", flush=True)
+    if not flows:
+        raise RuntimeError(
+            f"no flows scheduled for profile {list(profile)} over "
+            f"{duration_s}s at step {step_s}s -- the load would be silent"
+        )
 
-    h4.cmd(f"killall -9 {iperf} 2>/dev/null; true")
-    for port in ports:
-        h4.cmd(f"{iperf} -s -D -p {port}")
-    h1.cmd(f"killall -9 {iperf} 2>/dev/null; true")
-    time.sleep(0.5)
+    # One iperf3 server, one long-lived client, and `tc` does the shaping.
+    #
+    # Earlier versions started a server per port and a client per step. Both
+    # forms of iperf3 process management turned out to be unreliable here: with
+    # `-D` the daemon does not survive the shell Mininet spawns for cmd(), and
+    # even a plainly backgrounded server was gone seconds later. `ps` on h4
+    # showed no server and `ss -ltn` showed no listening socket, so every client
+    # connected to nothing -- the run produced 0.0 Mbps with no error anywhere.
+    #
+    # One server and one client is the smallest arrangement that can work, and
+    # shaping the *link* with tc means the offered rate follows the profile
+    # exactly, with no dependence on process lifetime at all.
+    iface = _host_interface(h1)
+    h4.cmd("killall -9 iperf3 2>/dev/null; true")
+    h1.cmd("killall -9 iperf3 2>/dev/null; true")
+    time.sleep(0.3)
+    h4.cmd(f"{iperf} -s -p 5201 > /tmp/iperf_server_5201.log 2>&1 &")
+    time.sleep(1.0)
+
+    listening = h4.cmd("ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null")
+    if ":5201" not in listening:
+        procs = h4.cmd("ps ax 2>/dev/null | grep iperf3 | grep -v grep; true")
+        raise RuntimeError(
+            "iperf3 server is not listening on port 5201; the flow would be "
+            f"silent.\nListening sockets:\n{listening}\n"
+            f"processes on h4:\n{procs or '(none)'}\nbinary: {iperf}"
+        )
+    print(f"[traffic] server bound on 5201; shaping {iface}", flush=True)
+
+    # The client offers far more than any profile step needs; tc trims it. That
+    # keeps the shaping entirely in one place, where it can be verified.
+    offered_ceiling = max(float(r) for r in profile) * 2.0 + 5.0
+    h1.cmd(
+        f"{iperf} -u -c 10.0.0.4 -b {offered_ceiling:.0f}M "
+        f"-t {max(1, int(round(duration_s)))} -p 5201 "
+        f"> /tmp/iperf_client_5201.log 2>&1 &"
+    )
+    print(f"[traffic] client offering {offered_ceiling:.0f} Mbps, "
+          f"trimmed by tc to follow the profile", flush=True)
 
     scheduled: List[Dict[str, Any]] = []
-    started = 0.0
-    for flow in sorted(flows, key=lambda f: f.start_s):
-        delay = flow.start_s - started
-        if delay > 0:
-            time.sleep(delay)
-        started = flow.start_s
+    n_steps = max(1, int(round(duration_s / step_s)))
+    for step in range(n_steps):
+        rate = float(profile[step % len(profile)])
         h1.cmd(
-            f"{iperf} -u -c 10.0.0.4 -b {flow.rate_mbps}M "
-            f"-t {max(1, int(round(flow.life_s)))} "
-            f"-p {flow.port} >/dev/null 2>&1 &"
+            f"tc qdisc replace dev {iface} root tbf "
+            f"rate {rate:.1f}mbit burst 64kbit latency 400ms"
         )
-        scheduled.append(asdict(flow))
-    # Absorb the tail of the run so the caller does not have to.
-    tail = duration_s - started
-    if tail > 0:
-        time.sleep(tail)
+        scheduled.append(asdict(ScheduledFlow(
+            start_s=step * step_s, port=5201, rate_mbps=rate,
+            life_s=min(step_s, duration_s - step * step_s),
+        )))
+        if (step + 1) * step_s < duration_s:
+            time.sleep(step_s)
+
+    # Release the shaper so teardown is not fighting a qdisc.
+    h1.cmd(f"tc qdisc del dev {iface} root 2>/dev/null; true")
     return scheduled
+
+
+def _host_interface(host: Any) -> str:
+    """The host's default interface name.
+
+    Shaping the wrong device would silently do nothing -- the qdisc would attach
+    to an interface that carries no traffic, and the run would look identical to
+    an unshaped one. So the interface is resolved from the host itself and
+    verified to exist.
+    """
+    name = getattr(host, "defaultIntf", None)
+    if callable(name):
+        try:
+            resolved = name().name
+            if resolved:
+                return str(resolved)
+        except Exception:  # noqa: BLE001
+            pass
+    interfaces = host.cmd("ls /sys/class/net").split()
+    interfaces = [i for i in interfaces if i != "lo"]
+    if not interfaces:
+        raise RuntimeError(
+            f"host {host.name} has no non-loopback interface to shape")
+    return interfaces[0]
 
 
 def run_live_pattern_on_hosts(

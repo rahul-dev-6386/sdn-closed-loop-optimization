@@ -319,13 +319,19 @@ class LiveDatasetCollector:
                 if verdict.ok:
                     print(f"    Shape OK: peak {verdict.peak_mbps:.1f} Mbps, "
                           f"largest jump {verdict.max_jump_mbps:.1f} Mbps")
+                    # Print the profile itself. The verdict says the shape was
+                    # acceptable; the profile lets a reader confirm it by eye,
+                    # which is how the original defect was caught.
+                    series = link_rate_series(run_rows)
+                    shown = ", ".join(f"{r:.0f}" for r in series[::2])
+                    print(f"    Rate profile (every 2nd sample): {shown}")
                 else:
                     print(f"    Shape NOT as intended for {run_id}:")
                     for reason in verdict.reasons:
                         print(f"      - {reason}")
                     self.shape_failures.append(verdict.as_dict())
             else:
-                self.shape_unchecked.append(pattern)
+                self.shape_unchecked.add(pattern)
         return run_rows
 
     def collect_live_dataset(
