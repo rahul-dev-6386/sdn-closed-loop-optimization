@@ -234,29 +234,58 @@ class FeatureBuilder:
         """
         return cls.link_key(row) + (str(row.get("run_id", "") or ""),)
 
+    #: How many rows the last :meth:`build` discarded as duplicate timestamps.
+    dropped_duplicates: int = 0
+
     def group_by_link(
         self, rows: Iterable[Dict[str, Any]]
     ) -> Dict[Tuple[str, ...], List[Dict[str, Any]]]:
         """Sort rows into per-link, per-run, time-ordered buckets.
 
+        Duplicate timestamps are resolved by keeping the first row and dropping
+        the rest, and the number dropped is recorded on
+        :attr:`dropped_duplicates`.
+
+        Notes
+        -----
+        This started life as a hard ``ValueError``, on the reasoning that an
+        ambiguous window should fail loudly. Real collected data then hit it: a
+        late port-stats reply lets the writer emit a second row from the *same*
+        measurement, which duplicates one timestamp. Refusing to build anything
+        because 8 of 96 series contained one duplicate each would discard a
+        whole dataset over a defect the collector now prevents at source
+        (see ``TelemetryCollector._is_duplicate_measurement``).
+
+        Dropping the later row is the right call because it is genuinely a
+        repeat of a measurement already present, not a distinct observation. The
+        count is surfaced rather than swallowed, so a dataset full of duplicates
+        is still visible instead of quietly shrinking.
+
         Raises
         ------
         ValueError
-            If two rows in one series share a timestamp, which would make the
-            window ambiguous.
+            Never for duplicates. Retained for genuinely unusable input, such as a
+            row whose timestamp does not parse.
         """
         buckets: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
         for row in rows:
             buckets.setdefault(self.series_key(row), []).append(row)
+
+        dropped = 0
         for key, items in buckets.items():
             items.sort(key=lambda r: float(r["timestamp"]))
-            stamps = [float(r["timestamp"]) for r in items]
-            if len(set(stamps)) != len(stamps):
-                dupes = len(stamps) - len(set(stamps))
-                raise ValueError(
-                    f"series {key} has {dupes} duplicate timestamp(s); "
-                    "the sliding window would be ambiguous"
-                )
+            unique: List[Dict[str, Any]] = []
+            for row in items:
+                if unique and float(row["timestamp"]) == float(unique[-1]["timestamp"]):
+                    dropped += 1
+                    continue
+                unique.append(row)
+            buckets[key] = unique
+        self.dropped_duplicates = dropped
+        if dropped:
+            LOGGER.warning(
+                "dropped %d duplicate-timestamp row(s); these were repeats of "
+                "a measurement already present, not new observations", dropped)
         return buckets
 
     # ------------------------------------------------------------- labelling --
@@ -376,7 +405,10 @@ class FeatureBuilder:
                 )
 
         LOGGER.info(
-            "built %d feature rows across %d series (link x run)", len(out), len(buckets)
+            "built %d feature rows across %d series (link x run)%s",
+            len(out), len(buckets),
+            f", dropped {self.dropped_duplicates} duplicate row(s)"
+            if self.dropped_duplicates else "",
         )
         return out
 

@@ -156,11 +156,49 @@ def test_missing_field_drops_the_row_rather_than_imputing(
     assert all(math.isfinite(v) for row in built for v in row.values)
 
 
-def test_duplicate_timestamps_are_rejected(builder: FeatureBuilder) -> None:
+def test_duplicate_timestamps_are_dropped_and_counted(
+    builder: FeatureBuilder,
+) -> None:
+    """Regression: this was a hard failure that discarded the whole dataset.
+
+    Real collected data hit it. A late port-stats reply lets the collector emit a
+    second row from the *same* measurement, duplicating one timestamp -- and 8 of
+    96 series having one each was enough to refuse to train at all. The later
+    row is dropped, because it repeats a measurement already present rather than
+    being a distinct observation, and the count is surfaced rather than hidden.
+    """
     rows = make_rows(20)
     rows[7]["timestamp"] = rows[6]["timestamp"]
-    with pytest.raises(ValueError, match="duplicate timestamp"):
-        builder.build(rows)
+    built = builder.build(rows)
+    assert builder.dropped_duplicates == 1
+    stamps = [r.timestamp for r in built]
+    assert len(stamps) == len(set(stamps)), "the window must stay unambiguous"
+    # 20 samples -> 16 windows; one duplicate removed -> 19 samples -> 15.
+    assert len(built) == 15, "one row fewer than an undamaged series"
+
+
+def test_a_duplicate_does_not_shrink_a_whole_series_group(
+    builder: FeatureBuilder,
+) -> None:
+    """One bad series must not cost the dataset every other series."""
+    clean = make_rows(30, congested_from=20, link="s1")
+    dirty = make_rows(30, congested_from=20, link="s3")
+    dirty[10]["timestamp"] = dirty[9]["timestamp"]
+    built = builder.build(clean + dirty)
+    assert builder.dropped_duplicates == 1
+    assert {r.link_key[0] for r in built} == {"s1", "s3"}
+    per_link = {}
+    for row in built:
+        per_link.setdefault(row.link_key[0], []).append(row)
+    # The damaged series loses exactly ONE window (the duplicate), not its
+    # entire series. Losing everything is what the old hard failure implied.
+    assert len(per_link["s1"]) == 26
+    assert len(per_link["s3"]) == 25
+
+
+def test_an_unduplicated_dataset_drops_nothing(builder: FeatureBuilder) -> None:
+    builder.build(make_rows(30, congested_from=20))
+    assert builder.dropped_duplicates == 0
 
 
 def test_identity_fields_in_a_row_do_not_break_building(

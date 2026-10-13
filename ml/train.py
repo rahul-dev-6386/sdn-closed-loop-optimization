@@ -306,10 +306,65 @@ def cross_check_labels(
 # --------------------------------------------------------------------------- #
 @dataclass
 class Split:
-    """A chronological train/test partition."""
+    """A train/test partition, with a note on how it was drawn."""
 
     train: np.ndarray
     test: np.ndarray
+    #: Free text describing the protocol, recorded in the report so a reader
+    #: never has to guess why two numbers differ.
+    protocol: str = "chronological"
+
+
+def run_group_split(ds: Dataset, test_fraction: float = 0.3) -> Split:
+    """Split by **run**, holding out whole collection runs.
+
+    Why this exists alongside :func:`time_split`
+    ---------------------------------------
+    Telemetry windows overlap heavily: consecutive windows in one run share 11 of
+    their 12 samples. A chronological cut therefore tends to land *inside* a run,
+    putting a test window a single sample away from a training window that is
+    otherwise identical. That is near-duplicate leakage, and it inflates PR-AUC
+    badly -- measured on real data, a chronological cut straddled one run of
+    twelve and put 17% of the test rows in it.
+
+    Holding out whole runs removes the overlap entirely. It answers a narrower
+    question -- "does this generalise to load it has never seen?" -- but that
+    question is the one whose answer can be trusted.
+
+    Runs are held out by *recency* (the newest whole runs), not at random, so
+    the test set is still later than the training set and the split stays
+    reproducible.
+
+    Raises
+    ------
+    DatasetError
+        If there are too few runs to hold any out.
+    ValueError
+        If ``test_fraction`` leaves either side empty.
+    """
+    if not 0.0 < test_fraction < 1.0:
+        raise ValueError(f"test_fraction must be in (0, 1), got {test_fraction}")
+    runs = sorted(set(ds.run_ids), key=lambda r: -max(
+        ds.timestamps[i] for i, run in enumerate(ds.run_ids) if run == r))
+    if len(runs) < 2:
+        raise DatasetError(
+            f"cannot split by run: only {len(runs)} run(s) in the dataset")
+
+    held = max(1, int(round(len(runs) * test_fraction)))
+    held = min(held, len(runs) - 1)
+    test_runs = set(runs[:held])
+
+    train = np.array([i for i, run in enumerate(ds.run_ids)
+                      if run not in test_runs], dtype=int)
+    test = np.array([i for i, run in enumerate(ds.run_ids)
+                     if run in test_runs], dtype=int)
+    if train.size == 0 or test.size == 0:
+        raise ValueError(
+            f"degenerate run-grouped split: {train.size} train / {test.size} test")
+    LOGGER.info("run-grouped split: holding out %d of %d run(s) (%s), "
+                "%d train / %d test rows", held, len(runs),
+                ", ".join(sorted(test_runs)), train.size, test.size)
+    return Split(train=train, test=test, protocol="run_grouped")
 
 
 def time_split(ds: Dataset, test_fraction: float) -> Split:
@@ -510,11 +565,24 @@ def leave_one_pattern_out(
                 continue
             train_idx = np.flatnonzero(~mask)
             test_idx = np.flatnonzero(mask)
-            y_test = ds.y[test_idx]
+            y_train, y_test = ds.y[train_idx], ds.y[test_idx]
+            # A fold can be degenerate on either side. Skipping only the
+            # single-class *test* slice -- and then crashing on a single-class
+            # *training* set -- takes down the entire training run over one fold
+            # of one validation scheme.
             if y_test.sum() == 0 or y_test.sum() == y_test.size:
                 per_pattern[held_out] = {
                     "n_samples": int(test_idx.size),
                     "skipped": "single-class held-out slice",
+                }
+                continue
+            if y_train.sum() == 0 or y_train.sum() == y_train.size:
+                per_pattern[held_out] = {
+                    "n_samples": int(test_idx.size),
+                    "skipped": (
+                        "single-class training set once this pattern is held "
+                        "out; nothing left to learn from"
+                    ),
                 }
                 continue
             fold_model = clone(template[model_name])
@@ -643,18 +711,46 @@ def train(
             100.0 * (label_check["agreement_rate"] or 0.0),
         )
 
-    split = time_split(ds, float(cfg.get("ml.test_fraction", 0.3)))
+    test_fraction = float(cfg.get("ml.test_fraction", 0.3))
     threshold = float(cfg.get("ml.decision_threshold", 0.5))
     models = build_models(cfg, quick=quick)
+
+    # Two protocols, because one of them is optimistic and the difference is
+    # worth several PR-AUC points.
+    #
+    #   chronological  -- "how does it do on later data?"  Legitimate, but the
+    #                     cut usually lands inside a run, and adjacent windows
+    #                     share 11 of 12 samples, so it flatters the model.
+    #   run_grouped    -- "does it generalise to unseen runs?" No window overlap
+    #                     at all. This is the honest number and the headline.
+    #
+    # Both are reported. Quoting only the chronological figure would be
+    # indefensible; quoting only the grouped one would hide a useful answer.
+    protocols: Dict[str, Split] = {}
+    try:
+        protocols["chronological"] = time_split(ds, test_fraction)
+    except (DatasetError, ValueError) as exc:
+        LOGGER.warning("chronological split unavailable: %s", exc)
+    try:
+        protocols["run_grouped"] = run_group_split(ds, test_fraction)
+    except (DatasetError, ValueError) as exc:
+        LOGGER.warning("run-grouped split unavailable: %s", exc)
+    if not protocols:
+        raise DatasetError("the dataset could not be split by any protocol")
+
+    headline = "run_grouped" if "run_grouped" in protocols else "chronological"
+    split = protocols[headline]
+    LOGGER.info("selecting on the %s protocol (%d of %d available)",
+                headline, len(protocols), 2)
 
     results: Dict[str, ModelResult] = {}
     for name, model in models.items():
         try:
             results[name] = evaluate_model(name, model, ds, split, threshold)
             LOGGER.info(
-                "%s: PR-AUC %.4f  F1 %.4f  lead %.1fs",
-                name, results[name].metrics.pr_auc, results[name].metrics.f1,
-                results[name].lead.mean_s,
+                "%s [%s]: PR-AUC %.4f  F1 %.4f  lead %.1fs",
+                name, headline, results[name].metrics.pr_auc,
+                results[name].metrics.f1, results[name].lead.mean_s,
             )
         except Exception as exc:  # keep the other candidate alive
             LOGGER.error("%s failed to train: %s", name, exc)
@@ -689,6 +785,25 @@ def train(
     winner = results[winner_name]
     LOGGER.info("winner: %s (selected by %s)", winner_name, selection)
 
+    # Score the winner under the other protocol too, so the report can show the
+    # size of the optimism rather than merely assert it.
+    alternate: Dict[str, Any] = {}
+    for protocol, other in protocols.items():
+        if protocol == headline:
+            continue
+        try:
+            scored = evaluate_model(winner_name, models[winner_name], ds,
+                                    other, threshold)
+            alternate[protocol] = {
+                **scored.metrics.as_dict(),
+                "lead_time": scored.lead.as_dict(),
+            }
+            LOGGER.info("winner under the %s protocol: PR-AUC %.4f (vs %.4f)",
+                        protocol, scored.metrics.pr_auc,
+                        winner.metrics.pr_auc)
+        except Exception as exc:  # noqa: BLE001
+            alternate[protocol] = {"error": f"{type(exc).__name__}: {exc}"}
+
     lopo = leave_one_pattern_out(models, ds, threshold, cfg=cfg, quick=quick)
 
     report: Dict[str, Any] = {
@@ -699,8 +814,10 @@ def train(
         "feature_names": ds.feature_names,
         "rows_dropped_unobserved_horizon": ds.n_rows_invalid,
         "label_cross_check": label_check,
+        "evaluation_protocol": headline,
         "time_split": {
-            "test_fraction": float(cfg.get("ml.test_fraction", 0.3)),
+            "protocol": headline,
+            "test_fraction": test_fraction,
             "train_rows": int(split.train.size),
             "test_rows": int(split.test.size),
             "train_cutoff_ts": float(ds.timestamps[split.train].max())
@@ -708,6 +825,14 @@ def train(
             "test_start_ts": float(ds.timestamps[split.test].min())
             if split.test.size else None,
         },
+        "alternate_protocol": alternate,
+        "leakage_note": (
+            "The chronological split cuts at a timestamp, which usually lands "
+            "inside a collection run; adjacent windows then share 11 of 12 "
+            "samples and the score is inflated. The headline here uses "
+            "run_grouped, which holds out whole runs and shares no window "
+            "between train and test. See alternate_protocol for the difference."
+        ),
         "decision_threshold": threshold,
         "winner": winner_name,
         "winner_selected_by": selection,

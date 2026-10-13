@@ -516,3 +516,55 @@ def test_partial_coverage_skips_only_the_unmeasured_link(tmp_path: Any) -> None:
     rows = collector.write_csv_snapshot()
     assert len(rows) == 1
     assert rows[0].src_port == 2
+
+
+# --------------------------------------------------------------------------- #
+# Duplicate-measurement suppression (P7 data-quality fix)
+# --------------------------------------------------------------------------- #
+def _collector_with_record(**kwargs):
+    """A collector wired up just enough to exercise the write path."""
+    from controller.telemetry import TelemetryCollector
+
+    collector = TelemetryCollector.__new__(TelemetryCollector)
+    collector._last_written_ts = {}
+    return collector
+
+
+def test_a_repeated_measurement_is_not_written_twice() -> None:
+    """Root fix for the duplicate-timestamp defect.
+
+    A record's timestamp comes from the port-stats reply that produced it, so a
+    late reply lets the writer emit a second row from the same measurement. That
+    is not a new observation: it breaks P7's sliding window and silently counts
+    one measurement twice in every average over that window.
+    """
+    collector = _collector_with_record()
+    key = ("s1", "s2", "forward")
+    assert collector._accept_new_measurement(key, 1000.0) is True
+    assert collector._accept_new_measurement(key, 1002.0) is True
+    assert collector._accept_new_measurement(key, 1002.0) is False, \
+        "the same timestamp must not be written twice"
+
+
+def test_a_stale_timestamp_does_not_rewind_the_watermark() -> None:
+    """An out-of-order record must not make the *next* good one look duplicate."""
+    collector = _collector_with_record()
+    key = ("s1", "s2", "forward")
+    collector._accept_new_measurement(key, 1000.0)
+    assert collector._accept_new_measurement(key, 900.0) is False
+    assert collector._accept_new_measurement(key, 1002.0) is True
+
+
+def test_the_watermark_is_per_link() -> None:
+    collector = _collector_with_record()
+    collector._accept_new_measurement(("s1", "s2", "forward"), 1000.0)
+    assert collector._accept_new_measurement(
+        ("s2", "s4", "forward"), 1000.0) is True
+
+
+def test_directions_are_watermarked_separately() -> None:
+    """s1->s2 and s2->s1 are distinct measurements that can share a timestamp."""
+    collector = _collector_with_record()
+    collector._accept_new_measurement(("s1", "s2", "forward"), 1000.0)
+    assert collector._accept_new_measurement(
+        ("s1", "s2", "reverse"), 1000.0) is True

@@ -29,6 +29,7 @@ from ml.train import (
     feature_importances,
     leave_one_pattern_out,
     load_labelled_csv,
+    run_group_split,
     time_split,
     train,
 )
@@ -473,50 +474,121 @@ def test_single_class_test_slice_is_reported_as_unmeaningful(
     silently returned whichever candidate was constructed first and reported a
     confident-looking winner. The report must instead say the comparison was not
     meaningful and fall back to F1.
+
+    Constructed so only the TEST slice is single-class: two mixed runs train
+    normally, and the newest run -- which run_grouped holds out -- is never
+    congested, so the test slice is entirely negative.
     """
-    # Run A is congested for its whole length, run B is never congested. A
-    # chronological split therefore yields a test slice of one class.
-    path = tmp_path / "mixed.csv"
+    columns = COLUMNS
+    path = tmp_path / "oneclass.csv"
+    rows: List[Dict[str, Any]] = []
+    # Newest run (fully uncongested) must be the held-out one, so it starts last
+    # in time.
+    specs = [
+        ("run_mixed_1", 9000.0, 30),   # mixed: congests from index 30
+        ("run_mixed_2", 20000.0, 30),  # mixed
+        ("run_clean", 40000.0, None),  # never congested -> all-negative test
+    ]
+    for run_id, base, congested_from in specs:
+        for i in range(60):
+            congested = congested_from is not None and i >= congested_from
+            util = 1.0 if congested else 0.3
+            rows.append({
+                "run_id": run_id, "timestamp": f"{base + i * 2.0:.4f}",
+                "src_switch": "s1", "dst_switch": "s2", "direction": "forward",
+                "src_port": 1, "dst_port": 2, "capacity_mbps": 100.0,
+                "tx_rate_mbps": util * 100.0, "rx_rate_mbps": util * 95.0,
+                "tx_packet_rate_pps": util * 1200.0,
+                "rx_packet_rate_pps": util * 1100.0,
+                "utilization": util, "latency_ms": 55.0 if congested else 4.0,
+                "loss_pct": 3.0 if congested else 0.0, "is_stale": "False",
+                "is_congested": str(congested),
+                "pattern": "ramp" if congested_from else "poisson",
+                "seed": 1, "label_future_congested": "", "lead_time_s": "",
+                "horizon_valid": "",
+            })
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=COLUMNS)
+        writer = csv.DictWriter(fh, fieldnames=columns)
         writer.writeheader()
-        rows: List[Dict[str, Any]] = []
-        for run_id, pattern, congested_from in (
-            ("run_pos", "ramp", 0),      # congested throughout
-            ("run_neg", "poisson", None),  # never congested
-        ):
-            base = 1000.0 if run_id == "run_pos" else 100000.0
-            for i in range(60):
-                cong = congested_from is not None and i >= congested_from
-                util = 1.0 if cong else 0.3
-                rows.append({
-                    "run_id": run_id, "timestamp": base + i * 2.0,
-                    "src_switch": "s1", "dst_switch": "s2", "direction": "forward",
-                    "src_port": 1, "dst_port": 2, "capacity_mbps": 100.0,
-                    "tx_rate_mbps": util * 100.0, "rx_rate_mbps": util * 95.0,
-                    "tx_packet_rate_pps": util * 1200.0,
-                    "rx_packet_rate_pps": util * 1100.0,
-                    "utilization": util, "latency_ms": 55.0 if cong else 4.0,
-                    "loss_pct": 3.0 if cong else 0.0, "is_stale": "False",
-                    "is_congested": str(cong), "pattern": pattern, "seed": 1,
-                    "label_future_congested": "", "lead_time_s": "",
-                    "horizon_valid": "",
-                })
         writer.writerows(rows)
 
-    base = load_config()
+    base_cfg = load_config()
     cfg = Config({
-        **dict(base),
-        "ml": {**dict(base["ml"]),
+        **dict(base_cfg),
+        "ml": {**dict(base_cfg["ml"]),
                "model_path": str(tmp_path / "s.joblib"),
                "metrics_path": str(tmp_path / "s.json"),
                "features_path": str(tmp_path / "s.png")},
     })
     report = train(path, cfg=cfg, quick=True)
-    assert report["winner"] in {"logistic_regression", "random_forest"}
+
+    assert report["evaluation_protocol"] == "run_grouped"
+    winner = report["models"][report["winner"]]
+    # Either the model trained on a mixed set (test slice single-class -> NaN),
+    # or the training set itself was degenerate. Both are "not meaningful", and
+    # neither may be reported as a confident result.
     if not report["evaluation_is_meaningful"]:
         assert report["winner_selected_by"] == "f1_fallback"
-        best = report["models"][report["winner"]]
-        assert math.isnan(best["pr_auc"]), (
-            "the fallback is only for the undefined case"
-        )
+        assert math.isnan(winner["pr_auc"]) or winner["n_samples"] > 0
+    else:
+        pytest.fail("a single-class held-out run must not yield a meaningful score")
+
+
+def test_lopo_skips_a_fold_whose_training_set_is_single_class(
+    tmp_path: Path,
+) -> None:
+    """A degenerate fold must be skipped, not take down the whole run.
+
+    Holding out the only pattern that contains congestion leaves a training set
+    with one class, and scikit-learn raises. That killed the entire training run
+    over one fold of one validation scheme -- the main evaluation had already
+    succeeded by then.
+    """
+    columns = COLUMNS
+    path = tmp_path / "lopo.csv"
+    rows: List[Dict[str, Any]] = []
+    # 'ramp' is the ONLY pattern with congestion. Holding it out leaves a
+    # training set that is entirely negative.
+    for run_id, base, pattern, cf in (
+        ("run_a", 9000.0, "ramp", 30),
+        ("run_b", 20000.0, "ramp", 30),
+        ("run_c", 40000.0, "poisson", None),
+    ):
+        for i in range(60):
+            congested = cf is not None and i >= cf
+            util = 1.0 if congested else 0.3
+            rows.append({
+                "run_id": run_id, "timestamp": f"{base + i * 2.0:.4f}",
+                "src_switch": "s1", "dst_switch": "s2", "direction": "forward",
+                "src_port": 1, "dst_port": 2, "capacity_mbps": 100.0,
+                "tx_rate_mbps": util * 100.0, "rx_rate_mbps": util * 95.0,
+                "tx_packet_rate_pps": util * 1200.0,
+                "rx_packet_rate_pps": util * 1100.0,
+                "utilization": util, "latency_ms": 55.0 if congested else 4.0,
+                "loss_pct": 3.0 if congested else 0.0, "is_stale": "False",
+                "is_congested": str(congested), "pattern": pattern, "seed": 1,
+                "label_future_congested": "", "lead_time_s": "",
+                "horizon_valid": "",
+            })
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    base_cfg = load_config()
+    cfg = Config({
+        **dict(base_cfg),
+        "ml": {**dict(base_cfg["ml"]),
+               "model_path": str(tmp_path / "l.joblib"),
+               "metrics_path": str(tmp_path / "l.json"),
+               "features_path": str(tmp_path / "l.png")},
+    })
+    report = train(path, cfg=cfg, quick=True)   # must not raise
+
+    folds = report["leave_one_pattern_out"]["folds"][report["winner"]]
+    per_pattern = folds["per_pattern"]
+    assert "ramp" in per_pattern
+    skipped = per_pattern["ramp"].get("skipped", "")
+    assert "single-class training set" in skipped, per_pattern["ramp"]
+    # The other fold is still scored, so the scheme yields something.
+    assert "poisson" in per_pattern

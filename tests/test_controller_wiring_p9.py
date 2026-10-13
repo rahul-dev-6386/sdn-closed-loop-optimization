@@ -200,13 +200,30 @@ def test_static_shortest_starts_nothing_but_is_reported() -> None:
     assert report["mode"] == "static_shortest"
 
 
-def test_ml_aware_without_a_model_still_starts_and_degrades() -> None:
-    """No model is a degradation, not a reason to run nothing."""
+def test_ml_aware_without_a_model_still_starts_and_degrades(
+    monkeypatch,
+) -> None:
+    """No model is a degradation, not a reason to run nothing.
+
+    The loader is stubbed to fail rather than relying on ``results/model.joblib``
+    being absent -- this test once passed only because no model had been trained
+    yet, and failed the moment one was. A test must not depend on the state of
+    the working tree.
+    """
+    import controller.reroute_integration as integration_module
+
+    def _no_model(self) -> None:
+        return None
+
+    monkeypatch.setattr(integration_module.RerouteIntegration,
+                        "_load_predictor", _no_model)
+
     controller = make_controller("ml_aware")
     controller._maybe_start_reroute_loop()
     integration = controller.reroute
     assert integration is not None and integration.loop is not None
-    assert integration.loop.predictor is None, "no model on disk to load"
+    assert integration.loop.predictor is None
     report = integration.loop.tick()
     assert report.effective_mode == "reactive_threshold"
     assert report.degraded is True
+    assert integration.loop.fallbacks, "the fallback must be counted"

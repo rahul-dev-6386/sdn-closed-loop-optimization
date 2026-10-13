@@ -513,6 +513,9 @@ class TelemetryCollector:
         # absent from this dict has *no* forecast, which is different from a
         # forecast of zero -- see the CSV comment.
         self.forecasts: Dict[Tuple[str, str, str], Tuple[float, bool]] = {}
+        # Timestamp of the rate record most recently written per link. See
+        # _is_duplicate_measurement for why this exists.
+        self._last_written_ts: Dict[Tuple[str, str, str], float] = {}
 
         # Control-channel echo RTT tracker for active probe latency bias compensation
         self.echo_tracker = ControlChannelEchoTracker()
@@ -833,9 +836,55 @@ class TelemetryCollector:
 
         return results
 
+    def _accept_new_measurement(self, key: Tuple[str, str, str],
+                                timestamp: float) -> bool:
+        """Gate a candidate row, advancing the watermark when it is accepted.
+
+        A record's timestamp comes from the port-stats *reply* that produced it,
+        not from the moment the row is written. The writer runs on its own timer,
+        so a late or dropped reply means a second write from the same
+        unrefreshed record.
+
+        That produced two rows with an identical timestamp and identical
+        measurements, which is not a new observation at all. It breaks the
+        sliding window in P7 (which requires strictly increasing timestamps) and,
+        worse, silently counts one measurement twice in every average and
+        variance computed over that window.
+
+        Side effect by design: this is a gate, not a query. Callers that
+        filtered with a pure predicate and set the watermark separately had to be
+        kept in step with each other, and a filter that silently forgot to
+        record the watermark is exactly how duplicates got written in the first
+        place.
+
+        Parameters
+        ----------
+        key, timestamp:
+            Link identity and the measurement's timestamp.
+
+        Returns
+        -------
+        bool
+            True when the row is a genuinely new measurement and may be written.
+            A timestamp at or below the watermark is rejected, which also stops
+            an out-of-order record from rewinding the watermark and making the
+            next good record look like a repeat.
+        """
+        previous = self._last_written_ts.get(key)
+        if previous is not None and timestamp <= previous:
+            return False
+        self._last_written_ts[key] = timestamp
+        return True
+
     def write_csv_snapshot(self) -> List[LinkTelemetryRecord]:
-        """Write current link records to CSV file."""
-        records = list(self.update_link_telemetry().values())
+        """Write current link records to CSV file.
+
+        Rows are only written when they carry a measurement not already written.
+        """
+        records = [rec for rec in self.update_link_telemetry().values()
+                   if self._accept_new_measurement(
+                       (rec.src_switch, rec.dst_switch, rec.direction),
+                       rec.timestamp)]
         if not records:
             return []
 
