@@ -21,7 +21,7 @@ CONFIG     ?= config.yaml
         snapshot snapshot-all snapshot-list snapshot-image \
         dataset train train-quick verify-p7 \
         experiments experiments-dry experiments-resume verify-p10 \
-        figures verify-p11 demo demo-control \
+        figures verify-p11 pipeline demo demo-control \
         ping check-native mn-clean
 
 help: ## Show this help
@@ -200,5 +200,8 @@ verify-p11: ## P11 acceptance: analysis refuses to over-claim, report renders
 figures:     ## P11 -- tables, figures and RESULTS.md from results/experiments.csv
 	$(PY) scripts/make_report.py
 	@echo "P11 (analysis): not implemented yet -- say 'start P11'"
+pipeline:    ## Run the remaining P7->P13 pipeline in dependency order (root)
+	bash scripts/run_pipeline.sh
+
 demo:        ## P13 -- end-to-end demonstration
 	@echo "P13 (demo): not implemented yet -- say 'start P13'"
