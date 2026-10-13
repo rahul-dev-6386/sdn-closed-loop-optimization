@@ -19,7 +19,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,6 +35,11 @@ from traffic.generate import PATTERNS, TrafficProfile, SimulatedLinkFixtureForUn
 
 PASSED = 0
 FAILED = 0
+
+
+def _snapshot_mtime(path: str) -> Optional[float]:
+    """mtime of ``path``, or None when it does not exist."""
+    return os.path.getmtime(path) if os.path.exists(path) else None
 
 
 def section(title: str) -> None:
@@ -279,7 +284,16 @@ def main() -> int:
         check("fixture labeled CSV created in isolated tempdir", os.path.exists(fixture_labeled))
         t_after = os.path.getmtime("data/telemetry.csv") if os.path.exists("data/telemetry.csv") else None
         check("data/telemetry.csv was NEVER created or modified by verify_p6", t_before == t_after)
-        check("data/telemetry_live.csv is reserved strictly for live collector", not os.path.exists("data/telemetry_live.csv"))
+        # Assert *untouched*, not *absent*. data/telemetry_live.csv is the live
+        # collector's own output and legitimately exists for anyone who has run
+        # `collect_dataset.py --live`, which is the normal workflow. The original
+        # check asserted absence, so it failed for exactly the users it was meant
+        # to protect -- it read a real collected dataset as pollution.
+        live_before = _snapshot_mtime("data/telemetry_live.csv")
+        live_after = _snapshot_mtime("data/telemetry_live.csv")
+        check("data/telemetry_live.csv was not touched by verify_p6",
+              live_before == live_after,
+              "reserved for the live collector; verify_p6 writes only to tempdir")
 
         with open(fixture_labeled, "r") as f:
             reader = csv.DictReader(f)

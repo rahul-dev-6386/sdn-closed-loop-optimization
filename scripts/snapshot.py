@@ -147,8 +147,17 @@ def targets() -> Dict[str, Target]:
                      [py, "scripts/verify_p6.py"]),
         "p7": Target("p7", "P7", "ML training + evaluation",
                      [py, "scripts/verify_p7.py"]),
-        "p10": Target("p10", "P10", "Experiments: 4 modes x scenarios x reps",
-                      [py, "scripts/verify_p10.py"], needs_root=True),
+        "p10": Target("p10", "P10", "Experiment harness + sweep integrity",
+                      [py, "scripts/verify_p10.py"]),
+        "p11": Target("p11", "P11", "Analysis restraint and report integrity",
+                      [py, "scripts/verify_p11.py"]),
+        "p8": Target("p8", "P8", "Online inference guards (unit-verified)",
+                     [py, "-m", "pytest", "tests/test_predict_p8.py", "-q"]),
+        "p9": Target("p9", "P9", "Cost, paths, reroute ordering (unit-verified)",
+                     [py, "-m", "pytest",
+                      "tests/test_routing_p9.py", "tests/test_paths_p9.py",
+                      "tests/test_reroute_p9.py", "tests/test_reroute_loop_p9.py",
+                      "-q"]),
         "unit": Target("unit", "--", "Unit test suite",
                        [py, "-m", "pytest", "tests/", "-q"]),
     }
@@ -283,7 +292,8 @@ def render_progress(manifest: Dict[str, Any]) -> str:
             "|---|---|---|---|---|---|"]
     badge = {"pass": "pass", "fail": "**FAIL**", "skipped": "skipped",
              "timeout": "**TIMEOUT**", "planned": "not built"}
-    order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p10", "unit"]
+    order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9",
+             "p10", "p11", "unit"]
     targets_map = targets()
     for key in order + [k for k in manifest["targets"] if k not in order]:
         rec = manifest["targets"].get(key)

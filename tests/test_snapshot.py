@@ -185,10 +185,40 @@ def test_availability_agrees_with_the_filesystem() -> None:
             assert target.available == script.is_file(), key
 
 
-def test_unbuilt_phase_renders_as_not_built() -> None:
+def test_a_planned_target_renders_as_not_built() -> None:
+    """An unbuilt phase must be visible as unbuilt, not silently dropped.
+
+    Driven by a synthetic target rather than by whichever phase happens to be
+    unbuilt today: this test once asserted on the live catalogue and began
+    failing the day P10's harness was written, which says nothing about the
+    behaviour it was meant to guard.
+    """
+    # A repo-relative path, which is the form Target.script recognises. An
+    # absolute path is deliberately ignored (it may be a system binary), so it
+    # would not exercise the planned branch.
+    target = snap.Target("pX", "PX", "not written yet",
+                         [snap.sys.executable, "scripts/verify_px_absent.py"])
+    assert not Path("scripts/verify_px_absent.py").exists(), (
+        "fixture collided with a real script"
+    )
+    assert target.available is False
+    manifest = {"targets": {}, "commit": "abc", "updated_at": "2026-01-01"}
+    manifest["targets"]["pX"] = snap.run_target(target)
+    assert manifest["targets"]["pX"]["status"] == "planned"
+    assert "not built" in snap.render_progress(manifest)
+
+
+def test_a_runnable_target_does_not_render_as_not_built() -> None:
+    """The converse: a phase with a harness must not look unbuilt."""
     manifest = {"targets": {}, "commit": "abc", "updated_at": "2026-01-01"}
     text = snap.render_progress(manifest)
-    assert "not built" in text, "P10's unbuilt harness must be visible"
+    planned = [t for t in snap.targets().values() if not t.available]
+    if planned:
+        assert "not built" in text
+    else:
+        assert "not built" not in text, (
+            "every catalogue target has a harness, so none should read as unbuilt"
+        )
 
 
 def test_list_runs_cleanly() -> None:
