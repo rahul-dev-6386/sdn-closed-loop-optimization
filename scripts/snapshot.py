@@ -50,6 +50,43 @@ SUMMARY_RE = re.compile(r"SUMMARY:\s*(\d+)\s*passed,\s*(\d+)\s*failed")
 PASSED_RE = re.compile(r"^\s*\[PASS\]", re.MULTILINE)
 FAILED_RE = re.compile(r"^\s*\[FAIL\]", re.MULTILINE)
 
+#: pytest's own summary line, e.g. "270 passed, 2 failed, 1 skipped in 5.71s".
+#: The counts are optional and their order is not fixed, so each is matched
+#: independently and a missing one defaults to 0.
+PYTEST_LINE_RE = re.compile(r"^.*?(\d+)\s+(passed|failed|error|errors|skipped|xfailed|xpassed)\b.*$", re.MULTILINE)
+PYTEST_COUNTS = {
+    "passed": "passed",
+    "failed": "failed",
+    "error": "failed",
+    "errors": "failed",
+    "skipped": "skipped",
+    "xfailed": "xfailed",
+    "xpassed": "xpassed",
+}
+
+
+def parse_pytest_counts(output: str) -> Optional[Dict[str, int]]:
+    """Extract pytest's tally from its final summary line.
+
+    Returns ``None`` when no pytest-style line is present, so the caller can
+    fall back to counting ``[PASS]``/``[FAIL]`` lines instead.
+    """
+    # The summary is the last non-empty line of a pytest run.
+    for line in reversed([ln for ln in output.splitlines() if ln.strip()]):
+        if "passed" not in line and "failed" not in line and "error" not in line:
+            continue
+        counts: Dict[str, int] = {}
+        for match in re.finditer(r"(\d+)\s+(\w+)", line):
+            number, word = int(match.group(1)), match.group(2)
+            key = PYTEST_COUNTS.get(word)
+            if key:
+                counts[key] = counts.get(key, 0) + number
+        if "passed" in counts or "failed" in counts:
+            counts.setdefault("passed", 0)
+            counts.setdefault("failed", 0)
+            return counts
+    return None
+
 
 @dataclass
 class Target:
@@ -61,6 +98,31 @@ class Target:
     argv: List[str]
     needs_root: bool = False
     timeout: int = 1800
+
+    @property
+    def script(self) -> Optional[Path]:
+        """The repo script this target runs, when it names one.
+
+        Only tokens that look like repo-relative script paths are considered, so
+        a target invoking a plain command (``true``, ``sleep``) is not mistaken
+        for a missing file.
+        """
+        for token in self.argv:
+            candidate = Path(token)
+            if candidate.suffix in {".py", ".sh"} and not candidate.is_absolute():
+                return ROOT / candidate
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Whether the target can actually run.
+
+        A catalogue entry whose script has not been written yet is reported as
+        ``planned`` rather than silently skipped, so an unbuilt phase shows up as
+        unbuilt instead of vanishing.
+        """
+        script = self.script
+        return script is None or script.is_file()
 
 
 def targets() -> Dict[str, Target]:
@@ -109,6 +171,13 @@ def run_target(target: Target) -> Dict[str, Any]:
 
     started = time.monotonic()
     argv = list(target.argv)
+    if not target.available:
+        return {
+            "key": target.key, "phase": target.phase, "title": target.title,
+            "status": "planned",
+            "reason": "verification script not written yet",
+            "needs_root": target.needs_root, "ran_at": _now(),
+        }
     # Escalate to sudo only for root targets, and only when not already root.
     if target.needs_root and os.geteuid() != 0:
         argv = ["sudo", "-n"] + argv
@@ -133,16 +202,23 @@ def run_target(target: Target) -> Dict[str, Any]:
         }
 
     output = (proc.stdout or "") + (proc.stderr or "")
-    passed = failed = None
+    passed = failed = skipped = None
     match = SUMMARY_RE.search(output)
     if match:
+        # The project's own acceptance harnesses print an explicit SUMMARY line.
         passed, failed = int(match.group(1)), int(match.group(2))
     else:
-        # Fall back to counting individual verdict lines.
-        n_pass = len(PASSED_RE.findall(output))
-        n_fail = len(FAILED_RE.findall(output))
-        if n_pass or n_fail:
-            passed, failed = n_pass, n_fail
+        pytest_counts = parse_pytest_counts(output)
+        if pytest_counts:
+            passed = pytest_counts["passed"]
+            failed = pytest_counts["failed"]
+            skipped = pytest_counts.get("skipped")
+        else:
+            # Last resort: count individual verdict lines.
+            n_pass = len(PASSED_RE.findall(output))
+            n_fail = len(FAILED_RE.findall(output))
+            if n_pass or n_fail:
+                passed, failed = n_pass, n_fail
 
     status = "pass" if proc.returncode == 0 and (failed in (0, None)) else "fail"
 
@@ -154,12 +230,25 @@ def run_target(target: Target) -> Dict[str, Any]:
     return {
         "key": target.key, "phase": target.phase, "title": target.title,
         "status": status, "exit_code": proc.returncode,
-        "passed": passed, "failed": failed,
+        "passed": passed, "failed": failed, "skipped": skipped,
         "needs_root": target.needs_root,
         "ran_at": _now(),
         "seconds": round(time.monotonic() - started, 1),
-        "log": str(log_path.relative_to(ROOT)),
+        "log": _relative(log_path),
     }
+
+
+def _relative(path: Path) -> str:
+    """Path relative to the repo root, or absolute if it lies outside.
+
+    The log directory is overridable, so a caller may legitimately point it
+    outside the repo; the snapshot must still record a usable path rather than
+    raise from ``relative_to``.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _sudo_available() -> bool:
@@ -193,7 +282,7 @@ def render_progress(manifest: Dict[str, Any]) -> str:
     rows = ["| Phase | Verification | Result | Passed | Failed | Checked (UTC) |",
             "|---|---|---|---|---|---|"]
     badge = {"pass": "pass", "fail": "**FAIL**", "skipped": "skipped",
-             "timeout": "**TIMEOUT**"}
+             "timeout": "**TIMEOUT**", "planned": "not built"}
     order = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p10", "unit"]
     targets_map = targets()
     for key in order + [k for k in manifest["targets"] if k not in order]:
@@ -201,7 +290,8 @@ def render_progress(manifest: Dict[str, Any]) -> str:
         tgt = targets_map.get(key)
         title = rec["title"] if rec else (tgt.title if tgt else key)
         if rec is None:
-            rows.append(f"| {tgt.phase if tgt else key} | {title} | not run | - | - | - |")
+            state = "not run" if (tgt is None or tgt.available) else "not built"
+            rows.append(f"| {tgt.phase if tgt else key} | {title} | {state} | - | - | - |")
             continue
         st = badge.get(rec.get("status", ""), rec.get("status", "?"))
         p = rec.get("passed")
@@ -261,6 +351,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         status = record.get("status")
         detail = (f"{record['passed']}/{record['passed'] + record['failed']}"
                   if record.get("passed") is not None else status)
+        if record.get("reason"):
+            detail = f"{detail} ({record['reason']})"
         print(f"    {status.upper()} {detail}", flush=True)
 
     write_manifest(manifest)

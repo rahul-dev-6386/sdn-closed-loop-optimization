@@ -1,0 +1,20 @@
+{
+  "project": "AI-Driven SDN Traffic Optimization",
+  "targets": {
+    "unit": {
+      "key": "unit",
+      "phase": "--",
+      "title": "Unit test suite",
+      "status": "pass",
+      "exit_code": 0,
+      "passed": null,
+      "failed": null,
+      "needs_root": false,
+      "ran_at": "2026-10-13T08:53:00+00:00",
+      "seconds": 6.3,
+      "log": "results/snapshots/logs/unit-20261013T085300Z.log"
+    }
+  },
+  "commit": "5702a6c",
+  "updated_at": "2026-10-13T08:53:00+00:00"
+}
