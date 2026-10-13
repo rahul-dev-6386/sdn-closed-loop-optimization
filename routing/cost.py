@@ -407,10 +407,15 @@ class RerouteGuard:
         self._arrived.setdefault(flow, t)
 
     def register(self, flow: str, now: Optional[float] = None) -> None:
-        """Note a flow's arrival without counting it as a reroute."""
+        """Note a flow's arrival without counting it as a reroute.
+
+        Only the dwell timer starts. Seeding the cooldown here would block the
+        very first reroute for ``cooldown_s``, which is not what "registered,
+        not rerouted" means -- and it would mean a flow placed at t=0 can never
+        be moved before t=cooldown_s regardless of how badly it is doing.
+        """
         t = self.now_fn() if now is None else now
         self._arrived[flow] = t
-        self._last.setdefault(flow, t)
 
     def dwell_remaining(self, flow: str, now: Optional[float] = None) -> float:
         """Seconds until ``flow`` becomes movable, never negative."""

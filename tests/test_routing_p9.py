@@ -388,3 +388,25 @@ def test_a_flow_cannot_be_flapped_by_the_guards_alone() -> None:
     # 0.90 vs 0.88 is a ~2% gain, far below the 15% the ratio demands, so the
     # cost guard alone should have prevented every move.
     assert moves == []
+
+
+def test_a_freshly_registered_flow_is_not_cooldown_blocked() -> None:
+    """Regression: ``register`` must not start the cooldown.
+
+    It seeded ``_last`` as well as ``_arrived``, so a flow placed at t=0 could
+    not be rerouted for ``cooldown_s`` -- regardless of how congested its path
+    was. That is a property of ``record`` (a reroute happened), not of
+    ``register`` (a flow was merely placed).
+    """
+    guard = RerouteGuard(cooldown_s=10.0, min_dwell_s=0.0, now_fn=lambda: 0.0)
+    guard.register("f1", now=0.0)
+    allowed, reason = guard.may_reroute("f1", now=0.0)
+    assert allowed is True, f"blocked by: {reason}"
+
+
+def test_record_still_starts_the_cooldown() -> None:
+    """The complement of the test above: a real reroute does start it."""
+    guard = RerouteGuard(cooldown_s=10.0, min_dwell_s=0.0, now_fn=lambda: 0.0)
+    guard.register("f1", now=0.0)
+    guard.record("f1", now=0.0)
+    assert guard.may_reroute("f1", now=1.0)[0] is False
