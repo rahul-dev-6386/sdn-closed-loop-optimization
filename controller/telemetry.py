@@ -83,6 +83,13 @@ CSV_FIELDNAMES = [
     "probe_loss_pct",
     "is_stale",
     "is_congested",
+    # P8's forecast for this link, as of this sample. Empty when no forecast was
+    # available (no model, stale telemetry, or too little history) -- which is
+    # deliberately distinguishable from a forecast of 0.0. Without this column
+    # the predictor's output is invisible outside the controller, so no
+    # experiment or demonstration can correlate a forecast with what followed.
+    "p_congestion",
+    "predicted_congested",
 ]
 
 
@@ -275,6 +282,10 @@ class LinkTelemetryRecord:
     probe_loss_pct: float
     is_stale: bool
     is_congested: bool
+    #: P8 forecast, or None when no forecast was available. None is not 0.0.
+    p_congestion: Optional[float] = None
+    #: True only when a forecast existed and met the decision threshold.
+    predicted_congested: bool = False
 
     def as_csv_dict(self) -> Dict[str, Any]:
         """Convert to dictionary matching CSV_FIELDNAMES."""
@@ -303,6 +314,11 @@ class LinkTelemetryRecord:
             "probe_loss_pct": f"{self.probe_loss_pct:.2f}",
             "is_stale": self.is_stale,
             "is_congested": self.is_congested,
+            # Empty rather than 0.0 when no forecast was available, so "we could
+            # not predict" never reads as "predicted fine".
+            "p_congestion": ("" if self.p_congestion is None
+                             else f"{self.p_congestion:.4f}"),
+            "predicted_congested": self.predicted_congested,
         }
 
 
@@ -493,12 +509,52 @@ class TelemetryCollector:
 
         # Latest computed link records: (src_switch, dst_switch, direction) -> LinkTelemetryRecord
         self.latest_link_records: Dict[Tuple[str, str, str], LinkTelemetryRecord] = {}
+        # Latest P8 forecast per link, set by the reroute loop each tick. A link
+        # absent from this dict has *no* forecast, which is different from a
+        # forecast of zero -- see the CSV comment.
+        self.forecasts: Dict[Tuple[str, str, str], Tuple[float, bool]] = {}
 
         # Control-channel echo RTT tracker for active probe latency bias compensation
         self.echo_tracker = ControlChannelEchoTracker()
 
         self.last_sample_monotonic = time.monotonic()
         self._csv_header_written = False
+
+    def apply_forecasts(
+        self, forecasts: Dict[Tuple[str, str, str], Tuple[Optional[float], bool]]
+    ) -> int:
+        """Record the latest per-link congestion forecast.
+
+        Parameters
+        ----------
+        forecasts:
+            ``(src, dst, direction) -> (probability, predicted_congested)``.
+            A ``None`` probability means the predictor declined to score that
+            link (stale, short history, or degraded) and is stored as "no
+            forecast" rather than as zero.
+
+        Returns
+        -------
+        int
+            How many links carried a usable forecast, so a caller can see a
+            completely unscored tick rather than assume it succeeded.
+
+        Notes
+        -----
+        The previous tick's forecasts are dropped first. Carrying them forward
+        would let a link keep reporting a confident probability derived from
+        telemetry that has since gone stale, which is exactly the fiction P8
+        exists to avoid.
+        """
+        self.forecasts = {}
+        scored = 0
+        for key, (probability, flagged) in forecasts.items():
+            if probability is None:
+                self.forecasts[key] = (None, False)
+                continue
+            self.forecasts[key] = (float(probability), bool(flagged))
+            scored += 1
+        return scored
 
     def register_link(
         self,
@@ -768,6 +824,10 @@ class TelemetryCollector:
             )
 
             key = (src_sw, dst_sw, "forward")
+            probability, flagged = self.forecasts.get(key, (None, False))
+            rec.p_congestion = probability
+            rec.predicted_congested = bool(flagged) if probability is not None \
+                else False
             results[key] = rec
             self.latest_link_records[key] = rec
 

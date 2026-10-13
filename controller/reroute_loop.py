@@ -282,6 +282,9 @@ class RerouteLoop:
         self.graph: Dict[str, List[str]] = {}
         self.ticks: List[TickReport] = []
         self.fallbacks: Dict[str, int] = {}
+        #: The most recent tick's per-link forecasts, published to telemetry by
+        #: the integration so the CSV records what the model actually said.
+        self.last_forecasts: Dict[LinkKey, Any] = {}
 
     # ---------------------------------------------------------- topology --
     def observe_links(self, links: Sequence[Tuple[str, str]]) -> None:
@@ -342,6 +345,10 @@ class RerouteLoop:
                             timestamp=now, n_links=len(self.history._rows))
 
         probabilities, degraded = self._forecast()
+        self.last_forecasts = {
+            key: (probability, bool(probability is not None and probability >= 0.5))
+            for key, probability in probabilities.items()
+        }
         report.n_scored = sum(1 for p in probabilities.values() if p is not None)
         report.n_unscored = sum(1 for p in probabilities.values() if p is None)
         report.predicted_congested = sorted(

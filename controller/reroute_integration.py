@@ -251,6 +251,7 @@ class RerouteIntegration:
                 break
             try:
                 self.loop.tick()
+                self.publish_forecasts()
                 self._sync_paths()
             except RerouteError as exc:
                 LOGGER.debug("reroute tick skipped: %s", exc)
@@ -258,6 +259,20 @@ class RerouteIntegration:
                 # A failure here must never take the controller down; the next
                 # tick retries, and the loop records its own degradation.
                 LOGGER.error("reroute tick failed: %s", exc)
+
+    def publish_forecasts(self) -> int:
+        """Copy the loop's latest forecasts into the telemetry collector.
+
+        Without this the predictor's output never leaves the loop, so the
+        telemetry CSV has no record of a forecast and neither the demo nor the
+        experiment harness can correlate a prediction with what followed it.
+
+        Returns the number of links that carried a usable forecast.
+        """
+        if self.loop is None:
+            return 0
+        latest = getattr(self.loop, "last_forecasts", None) or {}
+        return self.controller.telemetry.apply_forecasts(latest)
 
     def _sync_paths(self) -> None:
         """Keep the flow applier's path context in step with the loop."""
