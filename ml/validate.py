@@ -61,6 +61,7 @@ class ShapeVerdict:
     median_mbps: float
     idle_fraction: float
     max_jump_mbps: float
+    max_jump_at: int
     monotonic_rise: bool
     reaches_peak: bool
     smooth: bool
@@ -160,15 +161,16 @@ def validate_shape(
         return ShapeVerdict(
             run_id=run_id, pattern=pattern, n_samples=0, peak_mbps=0.0,
             median_mbps=0.0, idle_fraction=1.0, max_jump_mbps=0.0,
-            monotonic_rise=False, reaches_peak=False, smooth=False, ok=False,
-            reasons=["no samples"],
+            max_jump_at=0, monotonic_rise=False, reaches_peak=False,
+            smooth=False, ok=False, reasons=["no samples"],
         )
 
     peak = max(values)
     median = statistics.median(values)
     idle_fraction = sum(1 for v in values if v <= idle_mbps) / len(values)
-    jumps = [abs(values[i] - values[i - 1]) for i in range(1, len(values))]
-    max_jump = max(jumps) if jumps else 0.0
+    jump_pairs = [(abs(values[i] - values[i - 1]), i)
+                  for i in range(1, len(values))]
+    max_jump, max_jump_at = max(jump_pairs, default=(0.0, 0))
 
     reaches_peak = peak >= peak_mbps * min_peak_fraction
     smooth = max_jump <= peak_mbps * max_jump_fraction
@@ -196,17 +198,21 @@ def validate_shape(
             f"peak {peak:.1f} Mbps is below "
             f"{min_peak_fraction:.0%} of the configured {peak_mbps:.1f} Mbps")
     if not smooth:
+        # Report *where* the step is. "Somewhere in 120 samples" is not
+        # actionable; "at sample 0, the unshaped start" is.
+        position = ("the very start of the run" if max_jump_at <= 1
+                    else f"sample {max_jump_at} of {len(values)}")
         reasons.append(
-            f"largest single-sample jump {max_jump:.1f} Mbps exceeds "
-            f"{max_jump_fraction:.0%} of peak; the load is a step, so there "
-            "is nothing to predict")
+            f"largest single-sample jump {max_jump:.1f} Mbps (at {position}) "
+            f"exceeds {max_jump_fraction:.0%} of peak; the load is a step, so "
+            "there is nothing to predict")
 
     return ShapeVerdict(
         run_id=run_id, pattern=pattern, n_samples=len(values), peak_mbps=peak,
         median_mbps=median, idle_fraction=idle_fraction, max_jump_mbps=max_jump,
-        monotonic_rise=monotonic_rise, reaches_peak=reaches_peak, smooth=smooth,
-        ok=monotonic_rise and reaches_peak and smooth,
-        reasons=reasons,
+        max_jump_at=max_jump_at, monotonic_rise=monotonic_rise,
+        reaches_peak=reaches_peak, smooth=smooth,
+        ok=monotonic_rise and reaches_peak and smooth, reasons=reasons,
     )
 
 

@@ -605,6 +605,10 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=90.0, help="Duration in seconds per run (default: 90.0)")
     parser.add_argument("--out-dir", type=str, default="data", help="Target directory for dataset files (default: data)")
     parser.add_argument("--no-resume", action="store_true", help="Do not resume; overwrite progress")
+    parser.add_argument("--patterns", nargs="*", default=None,
+                        help="Only collect these traffic patterns (subset of PATTERNS). "
+                             "Useful for re-collecting one pattern whose shape was wrong, "
+                             "without repeating the others.")
     parser.add_argument("--label-only", action="store_true", help="Apply labeling to existing telemetry_live.csv")
     parser.add_argument("--smoke", action="store_true", help="Quick smoke test mode (1 run per pattern, 30s, data/smoke/)")
     parser.add_argument("--dry-run", action="store_true", help="Perform preflight and import checks without root/Mininet")
@@ -616,6 +620,15 @@ def main() -> int:
         print("\nPreflight check failed. Aborting.", file=sys.stderr)
         return 1
 
+    # Validate the pattern filter before anything that can exit early, so a
+    # typo is caught in every mode rather than only in a real run.
+    if args.patterns:
+        unknown = [p for p in args.patterns if p not in PATTERNS]
+        if unknown:
+            print(f"ERROR: unknown pattern(s) {unknown}; expected from {PATTERNS}",
+                  file=sys.stderr)
+            return 2
+
     if args.dry_run:
         print("\n--dry-run requested: Preflight passed successfully. Exiting.")
         return 0
@@ -623,6 +636,7 @@ def main() -> int:
     out_dir = "data/smoke" if args.smoke else args.out_dir
     runs_per_pat = 1 if args.smoke else args.runs_per_pattern
     dur = 30.0 if args.smoke else args.duration
+
 
     collector = LiveDatasetCollector(
         config=cfg,
@@ -638,9 +652,14 @@ def main() -> int:
             print("ERROR: Live collection requires root privileges (run with sudo).", file=sys.stderr)
             return 2
 
-        print(f"Starting LIVE dataset collection ({out_dir}): {len(PATTERNS)} patterns x {runs_per_pat} runs, {dur}s each...")
+        # Honour --patterns: re-collecting one pattern that produced the wrong
+        # shape should not repeat the others.
+        selected_patterns = args.patterns if args.patterns else list(PATTERNS)
+
+        print(f"Starting LIVE dataset collection ({out_dir}): {len(selected_patterns)} pattern(s) "
+              f"{selected_patterns} x {runs_per_pat} runs, {dur}s each...")
         collector.collect_live_dataset(
-            patterns=PATTERNS,
+            patterns=selected_patterns,
             runs_per_pattern=runs_per_pat,
             duration_s=dur,
             resume=not args.no_resume,

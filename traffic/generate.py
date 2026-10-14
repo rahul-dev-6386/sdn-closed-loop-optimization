@@ -384,8 +384,19 @@ def run_profiled_load_on_hosts(
         )
     print(f"[traffic] server bound on 5201; shaping {iface}", flush=True)
 
-    # The client offers far more than any profile step needs; tc trims it. That
-    # keeps the shaping entirely in one place, where it can be verified.
+    # Shape to the FIRST step before the client starts.
+    #
+    # The client offers far more than any step needs, so launching it first would
+    # push an unshaped burst through before the first rate was applied -- measured
+    # as a 6.4 Mbps single-sample jump at the very start of the run, which is the
+    # "step, not a ramp" failure the shape validator exists to reject.
+    first_rate = float(profile[0])
+    h1.cmd(
+        f"tc qdisc replace dev {iface} root tbf "
+        f"rate {first_rate:.1f}mbit burst 32kbit latency 100ms"
+    )
+    time.sleep(0.5)
+
     offered_ceiling = max(float(r) for r in profile) * 2.0 + 5.0
     h1.cmd(
         f"{iperf} -u -c 10.0.0.4 -b {offered_ceiling:.0f}M "
@@ -393,15 +404,18 @@ def run_profiled_load_on_hosts(
         f"> /tmp/iperf_client_5201.log 2>&1 &"
     )
     print(f"[traffic] client offering {offered_ceiling:.0f} Mbps, "
-          f"trimmed by tc to follow the profile", flush=True)
+          f"shaped from the start to follow the profile "
+          f"(first step {first_rate:.0f} Mbps)", flush=True)
 
     scheduled: List[Dict[str, Any]] = []
     n_steps = max(1, int(round(duration_s / step_s)))
     for step in range(n_steps):
         rate = float(profile[step % len(profile)])
+        # burst and latency are kept small so a rate change cannot dump a large
+        # token-bucket surplus onto the link in one sample.
         h1.cmd(
             f"tc qdisc replace dev {iface} root tbf "
-            f"rate {rate:.1f}mbit burst 64kbit latency 400ms"
+            f"rate {rate:.1f}mbit burst 32kbit latency 100ms"
         )
         scheduled.append(asdict(ScheduledFlow(
             start_s=step * step_s, port=5201, rate_mbps=rate,
@@ -484,18 +498,48 @@ def run_live_pattern_on_hosts(
         return
 
     elif pattern == "bursty_onoff":
-        # Alternating 30s on at 12M, 20s off at 2M
+        # Alternating on/off, with a gradual onset.
+        #
+        # The previous version launched iperf at full peak rate the instant the
+        # on-phase began, so offered load stepped from ~2 Mbps to 12 Mbps inside a
+        # single 2 s sample. Measured across the dataset: 720 of 740 congestion
+        # onsets were steps larger than 3 Mbps. A model cannot lead a step -- it
+        # can only react to it -- which is why training produced perfect F1 and
+        # zero lead time at the same time.
+        #
+        # Now each on-phase ramps from base to peak over `ramp_up_s` seconds using
+        # the same tc shaper the ramp pattern uses, so the onset spans several
+        # samples and there is something to predict.
         elapsed = 0.0
         while elapsed < duration_s:
             on_dur = min(30.0, duration_s - elapsed)
-            h1.cmd(f"{iperf} -u -c 10.0.0.4 -b {peak_rate_mbps}M -t {int(on_dur)} -p 5201 >/dev/null 2>&1 &")
-            time_sleep(on_dur)
+            ramp_s = min(20.0, on_dur)
+            steps = max(1, int(round(ramp_s / 10.0)))
+            for i in range(steps + 1):
+                rate = base_rate_mbps + (peak_rate_mbps - base_rate_mbps) * (i / steps)
+                h1.cmd(
+                    f"tc qdisc replace dev {_host_interface(h1)} root tbf "
+                    f"rate {rate:.1f}mbit burst 32kbit latency 100ms"
+                )
+                if i < steps:
+                    time_sleep(ramp_s / steps)
+            hold_s = on_dur - ramp_s
+            if hold_s > 0:
+                time_sleep(hold_s)
             elapsed += on_dur
             if elapsed >= duration_s:
                 break
             off_dur = min(20.0, duration_s - elapsed)
-            h1.cmd(f"{iperf} -u -c 10.0.0.4 -b {base_rate_mbps}M -t {int(off_dur)} -p 5201 >/dev/null 2>&1 &")
-            time_sleep(off_dur)
+            # Ease back down rather than dropping straight to base.
+            for i in range(steps, -1, -1):
+                rate = base_rate_mbps + (peak_rate_mbps - base_rate_mbps) * (i / steps)
+                h1.cmd(
+                    f"tc qdisc replace dev {_host_interface(h1)} root tbf "
+                    f"rate {rate:.1f}mbit burst 32kbit latency 100ms"
+                )
+                if i > 0:
+                    time_sleep(10.0)
+            time_sleep(max(0.0, off_dur - ramp_s))
             elapsed += off_dur
 
     elif pattern == "poisson":
