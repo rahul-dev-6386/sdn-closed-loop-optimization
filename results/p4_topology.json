@@ -1,0 +1,31 @@
+{
+  "passed": 25,
+  "failed": 0,
+  "nodes": [
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "h1",
+    "h4"
+  ],
+  "edges": 6,
+  "paths_h1_h4": [
+    [
+      "h1",
+      "s1",
+      "s2",
+      "s4",
+      "h4"
+    ],
+    [
+      "h1",
+      "s1",
+      "s3",
+      "s4",
+      "h4"
+    ]
+  ],
+  "predicted_rtt_ms": 24.0,
+  "bottleneck_bw_mbps": 10.0
+}

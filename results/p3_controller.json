@@ -1,0 +1,38 @@
+{
+  "checks": {
+    "pingall": {
+      "received": 2,
+      "sent": 2,
+      "loss_pct": 0.0
+    },
+    "flows": {
+      "s1": 4,
+      "s2": 4,
+      "s3": 2,
+      "s4": 4
+    },
+    "storm": {
+      "idle_seconds": 30,
+      "delta_packets": {
+        "s1": 0,
+        "s2": 0,
+        "s3": 0,
+        "s4": 0
+      },
+      "total_delta": 0
+    },
+    "throughput": {
+      "forward_mbps": 10.79963298378265,
+      "reverse_mbps": 10.878319862108604
+    },
+    "restart": {
+      "loss_after_restart_pct": 0.0,
+      "pingall_loss_after_restart_pct": 0.0,
+      "forwarding_flows_after_restart": 6
+    }
+  },
+  "passed": 17,
+  "failed": 0,
+  "cleanup_ok": true,
+  "controller_log": "data/logs/p3_controller.log"
+}

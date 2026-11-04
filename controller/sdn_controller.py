@@ -822,8 +822,9 @@ class SdnController(app_manager.RyuApp):
                 hub.sleep(0.15)
                 self.telemetry.write_csv_snapshot()
                 if self.telemetry.is_telemetry_stalled():
-                    LOGGER.warning("Telemetry STALLED: no updates within stall threshold")
-                    self.event_log.emit("telemetry_stall", elapsed_s=self.telemetry.stall_threshold_s)
+                    elapsed = round(time.monotonic() - self.telemetry.last_sample_monotonic, 1)
+                    LOGGER.warning("Telemetry STALLED: no updates within stall threshold (elapsed=%.1fs)", elapsed)
+                    self.event_log.emit("telemetry_stall", elapsed_s=elapsed)
             except Exception as exc:
                 LOGGER.debug("telemetry loop error: %s", exc)
             hub.sleep(max(0.1, interval - 0.15))

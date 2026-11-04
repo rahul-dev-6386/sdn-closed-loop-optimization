@@ -1,0 +1,592 @@
+{
+  "trained_at": "2026-11-03T17:42:22+00:00",
+  "dataset_csv": "data/telemetry_live_labeled.csv",
+  "dataset": "8780 rows x 28 features, 1552 positive (17.7%), 5 patterns, 8 links, 200 link-run series, 1200 rows dropped for an unobserved horizon",
+  "feature_builder": "FeatureBuilder(window_w=12, sample_interval_s=2.0s, label_gap_s=2.0s, horizon_n_s=10.0s, columns=28 over 7 fields)",
+  "feature_names": [
+    "tx_rate_mbps__last",
+    "tx_rate_mbps__mean",
+    "tx_rate_mbps__slope",
+    "tx_rate_mbps__std",
+    "rx_rate_mbps__last",
+    "rx_rate_mbps__mean",
+    "rx_rate_mbps__slope",
+    "rx_rate_mbps__std",
+    "tx_packet_rate_pps__last",
+    "tx_packet_rate_pps__mean",
+    "tx_packet_rate_pps__slope",
+    "tx_packet_rate_pps__std",
+    "rx_packet_rate_pps__last",
+    "rx_packet_rate_pps__mean",
+    "rx_packet_rate_pps__slope",
+    "rx_packet_rate_pps__std",
+    "utilization__last",
+    "utilization__mean",
+    "utilization__slope",
+    "utilization__std",
+    "latency_ms__last",
+    "latency_ms__mean",
+    "latency_ms__slope",
+    "latency_ms__std",
+    "loss_pct__last",
+    "loss_pct__mean",
+    "loss_pct__slope",
+    "loss_pct__std"
+  ],
+  "rows_dropped_unobserved_horizon": 1200,
+  "label_cross_check": {
+    "compared": 8780,
+    "agree": 8779,
+    "disagree": 1,
+    "no_csv_label": 0,
+    "agreement_rate": 0.9999,
+    "disagreement_examples": [
+      {
+        "timestamp": 1791968271.5873,
+        "link": "s1->s3",
+        "builder_label": 0,
+        "csv_label": 1
+      }
+    ]
+  },
+  "evaluation_protocol": "run_grouped",
+  "time_split": {
+    "protocol": "run_grouped",
+    "test_fraction": 0.3,
+    "train_rows": 6016,
+    "test_rows": 2764,
+    "train_cutoff_ts": 1791968345.746,
+    "test_start_ts": 1791968387.575
+  },
+  "alternate_protocol": {
+    "chronological": {
+      "n_samples": 2674,
+      "n_positive": 396,
+      "positive_rate": 0.1480927449513837,
+      "pr_auc": 0.9977644811220999,
+      "roc_auc": 0.9995953831555237,
+      "precision": 0.9355608591885441,
+      "recall": 0.98989898989899,
+      "f1": 0.9619631901840491,
+      "accuracy": 0.9884068810770381,
+      "threshold": 0.5,
+      "lead_time": {
+        "episodes": 12,
+        "detected": 3,
+        "detection_rate": 0.25,
+        "mean_s": 2.005,
+        "median_s": 2.005,
+        "min_s": 2.004,
+        "max_s": 2.005,
+        "per_episode_s": [
+          2.01,
+          2.0,
+          2.0
+        ]
+      }
+    }
+  },
+  "leakage_note": "The chronological split cuts at a timestamp, which usually lands inside a collection run; adjacent windows then share 11 of 12 samples and the score is inflated. The headline here uses run_grouped, which holds out whole runs and shares no window between train and test. See alternate_protocol for the difference.",
+  "decision_threshold": 0.5,
+  "winner": "random_forest",
+  "winner_selected_by": "pr_auc",
+  "evaluation_is_meaningful": true,
+  "models": {
+    "logistic_regression": {
+      "n_samples": 2764,
+      "n_positive": 412,
+      "positive_rate": 0.14905933429811866,
+      "pr_auc": 0.9927140709172774,
+      "roc_auc": 0.9987482250181626,
+      "precision": 0.8583333333333333,
+      "recall": 1.0,
+      "f1": 0.9237668161434976,
+      "accuracy": 0.975397973950796,
+      "threshold": 0.5,
+      "lead_time": {
+        "episodes": 12,
+        "detected": 8,
+        "detection_rate": 0.6667,
+        "mean_s": 2.005,
+        "median_s": 2.005,
+        "min_s": 2.004,
+        "max_s": 2.008,
+        "per_episode_s": [
+          2.01,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.01,
+          2.01,
+          2.0
+        ]
+      },
+      "inference_latency": {
+        "mean_ms": 0.45,
+        "p95_ms": 0.575,
+        "max_ms": 0.725,
+        "samples": 20,
+        "per_link_rows": 2764
+      },
+      "feature_importance": [
+        {
+          "feature": "utilization__last",
+          "importance": 1.31577,
+          "pct": 7.799
+        },
+        {
+          "feature": "tx_rate_mbps__last",
+          "importance": 1.315736,
+          "pct": 7.799
+        },
+        {
+          "feature": "loss_pct__last",
+          "importance": 1.305948,
+          "pct": 7.741
+        },
+        {
+          "feature": "rx_rate_mbps__mean",
+          "importance": -1.274725,
+          "pct": 7.555
+        },
+        {
+          "feature": "rx_rate_mbps__last",
+          "importance": -1.229779,
+          "pct": 7.289
+        },
+        {
+          "feature": "tx_packet_rate_pps__mean",
+          "importance": -1.184429,
+          "pct": 7.02
+        },
+        {
+          "feature": "tx_rate_mbps__mean",
+          "importance": 1.019543,
+          "pct": 6.043
+        },
+        {
+          "feature": "utilization__mean",
+          "importance": 1.019279,
+          "pct": 6.041
+        },
+        {
+          "feature": "loss_pct__mean",
+          "importance": 0.906382,
+          "pct": 5.372
+        },
+        {
+          "feature": "rx_packet_rate_pps__last",
+          "importance": 0.898021,
+          "pct": 5.323
+        },
+        {
+          "feature": "rx_packet_rate_pps__mean",
+          "importance": 0.889575,
+          "pct": 5.273
+        },
+        {
+          "feature": "rx_rate_mbps__std",
+          "importance": -0.811699,
+          "pct": 4.811
+        },
+        {
+          "feature": "tx_packet_rate_pps__last",
+          "importance": -0.77403,
+          "pct": 4.588
+        },
+        {
+          "feature": "tx_packet_rate_pps__std",
+          "importance": 0.595691,
+          "pct": 3.531
+        },
+        {
+          "feature": "latency_ms__slope",
+          "importance": 0.459958,
+          "pct": 2.726
+        },
+        {
+          "feature": "latency_ms__last",
+          "importance": 0.251765,
+          "pct": 1.492
+        },
+        {
+          "feature": "loss_pct__std",
+          "importance": 0.236299,
+          "pct": 1.401
+        },
+        {
+          "feature": "latency_ms__mean",
+          "importance": -0.234929,
+          "pct": 1.392
+        },
+        {
+          "feature": "rx_packet_rate_pps__std",
+          "importance": -0.201336,
+          "pct": 1.193
+        },
+        {
+          "feature": "latency_ms__std",
+          "importance": 0.182844,
+          "pct": 1.084
+        },
+        {
+          "feature": "loss_pct__slope",
+          "importance": 0.165745,
+          "pct": 0.982
+        },
+        {
+          "feature": "tx_rate_mbps__std",
+          "importance": 0.158814,
+          "pct": 0.941
+        },
+        {
+          "feature": "utilization__std",
+          "importance": 0.158546,
+          "pct": 0.94
+        },
+        {
+          "feature": "utilization__slope",
+          "importance": 0.103703,
+          "pct": 0.615
+        },
+        {
+          "feature": "tx_rate_mbps__slope",
+          "importance": 0.10242,
+          "pct": 0.607
+        },
+        {
+          "feature": "tx_packet_rate_pps__slope",
+          "importance": -0.044095,
+          "pct": 0.261
+        },
+        {
+          "feature": "rx_rate_mbps__slope",
+          "importance": -0.015474,
+          "pct": 0.092
+        },
+        {
+          "feature": "rx_packet_rate_pps__slope",
+          "importance": 0.015068,
+          "pct": 0.089
+        }
+      ]
+    },
+    "random_forest": {
+      "n_samples": 2764,
+      "n_positive": 412,
+      "positive_rate": 0.14905933429811866,
+      "pr_auc": 0.9969482380772439,
+      "roc_auc": 0.9994602816854897,
+      "precision": 0.9316628701594533,
+      "recall": 0.9927184466019418,
+      "f1": 0.9612220916568743,
+      "accuracy": 0.9880607814761215,
+      "threshold": 0.5,
+      "lead_time": {
+        "episodes": 12,
+        "detected": 5,
+        "detection_rate": 0.4167,
+        "mean_s": 2.005,
+        "median_s": 2.005,
+        "min_s": 2.004,
+        "max_s": 2.008,
+        "per_episode_s": [
+          2.01,
+          2.0,
+          2.0,
+          2.0,
+          2.01
+        ]
+      },
+      "inference_latency": {
+        "mean_ms": 2.757,
+        "p95_ms": 3.055,
+        "max_ms": 3.28,
+        "samples": 20,
+        "per_link_rows": 2764
+      },
+      "feature_importance": [
+        {
+          "feature": "utilization__mean",
+          "importance": 0.226039,
+          "pct": 22.604
+        },
+        {
+          "feature": "tx_rate_mbps__last",
+          "importance": 0.133894,
+          "pct": 13.389
+        },
+        {
+          "feature": "utilization__last",
+          "importance": 0.130048,
+          "pct": 13.005
+        },
+        {
+          "feature": "tx_packet_rate_pps__mean",
+          "importance": 0.128798,
+          "pct": 12.88
+        },
+        {
+          "feature": "tx_rate_mbps__mean",
+          "importance": 0.113444,
+          "pct": 11.344
+        },
+        {
+          "feature": "tx_packet_rate_pps__last",
+          "importance": 0.048357,
+          "pct": 4.836
+        },
+        {
+          "feature": "utilization__std",
+          "importance": 0.044993,
+          "pct": 4.499
+        },
+        {
+          "feature": "tx_rate_mbps__std",
+          "importance": 0.023135,
+          "pct": 2.313
+        },
+        {
+          "feature": "latency_ms__last",
+          "importance": 0.022524,
+          "pct": 2.252
+        },
+        {
+          "feature": "tx_packet_rate_pps__std",
+          "importance": 0.014129,
+          "pct": 1.413
+        },
+        {
+          "feature": "latency_ms__mean",
+          "importance": 0.012528,
+          "pct": 1.253
+        },
+        {
+          "feature": "latency_ms__std",
+          "importance": 0.010003,
+          "pct": 1.0
+        },
+        {
+          "feature": "rx_rate_mbps__mean",
+          "importance": 0.009051,
+          "pct": 0.905
+        },
+        {
+          "feature": "latency_ms__slope",
+          "importance": 0.008517,
+          "pct": 0.852
+        },
+        {
+          "feature": "loss_pct__last",
+          "importance": 0.008439,
+          "pct": 0.844
+        },
+        {
+          "feature": "utilization__slope",
+          "importance": 0.008243,
+          "pct": 0.824
+        },
+        {
+          "feature": "rx_packet_rate_pps__std",
+          "importance": 0.008137,
+          "pct": 0.814
+        },
+        {
+          "feature": "rx_packet_rate_pps__mean",
+          "importance": 0.007303,
+          "pct": 0.73
+        },
+        {
+          "feature": "rx_packet_rate_pps__last",
+          "importance": 0.006939,
+          "pct": 0.694
+        },
+        {
+          "feature": "tx_rate_mbps__slope",
+          "importance": 0.00654,
+          "pct": 0.654
+        },
+        {
+          "feature": "loss_pct__mean",
+          "importance": 0.005712,
+          "pct": 0.571
+        },
+        {
+          "feature": "rx_rate_mbps__last",
+          "importance": 0.004641,
+          "pct": 0.464
+        },
+        {
+          "feature": "tx_packet_rate_pps__slope",
+          "importance": 0.004329,
+          "pct": 0.433
+        },
+        {
+          "feature": "rx_rate_mbps__std",
+          "importance": 0.003928,
+          "pct": 0.393
+        },
+        {
+          "feature": "rx_packet_rate_pps__slope",
+          "importance": 0.003017,
+          "pct": 0.302
+        },
+        {
+          "feature": "rx_rate_mbps__slope",
+          "importance": 0.00279,
+          "pct": 0.279
+        },
+        {
+          "feature": "loss_pct__std",
+          "importance": 0.002339,
+          "pct": 0.234
+        },
+        {
+          "feature": "loss_pct__slope",
+          "importance": 0.002182,
+          "pct": 0.218
+        }
+      ]
+    }
+  },
+  "leave_one_pattern_out": {
+    "available": true,
+    "folds": {
+      "logistic_regression": {
+        "per_pattern": {
+          "bursty_onoff": {
+            "n_samples": 1790,
+            "n_positive": 109,
+            "positive_rate": 0.06089385474860335,
+            "pr_auc": 0.9594974746439549,
+            "roc_auc": 0.9961250675384355,
+            "precision": 0.7596899224806202,
+            "recall": 0.8990825688073395,
+            "f1": 0.823529411764706,
+            "accuracy": 0.976536312849162,
+            "threshold": 0.5
+          },
+          "elephant_mice": {
+            "n_samples": 1798,
+            "n_positive": 450,
+            "positive_rate": 0.25027808676307006,
+            "pr_auc": 1.0,
+            "roc_auc": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "threshold": 0.5
+          },
+          "poisson": {
+            "n_samples": 1758,
+            "n_positive": 240,
+            "positive_rate": 0.13651877133105803,
+            "pr_auc": 0.7967288610103939,
+            "roc_auc": 0.9627552700922266,
+            "precision": 0.6366906474820144,
+            "recall": 0.7375,
+            "f1": 0.6833976833976835,
+            "accuracy": 0.906712172923777,
+            "threshold": 0.5
+          },
+          "ramp": {
+            "n_samples": 1638,
+            "n_positive": 303,
+            "positive_rate": 0.184981684981685,
+            "pr_auc": 0.9596192627911758,
+            "roc_auc": 0.9908604343580425,
+            "precision": 0.7952755905511811,
+            "recall": 1.0,
+            "f1": 0.8859649122807018,
+            "accuracy": 0.9523809523809523,
+            "threshold": 0.5
+          },
+          "tcp_udp_mix": {
+            "n_samples": 1796,
+            "n_positive": 450,
+            "positive_rate": 0.2505567928730512,
+            "pr_auc": 1.0,
+            "roc_auc": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "threshold": 0.5
+          }
+        },
+        "mean_pr_auc": 0.9432,
+        "mean_f1": 0.8786
+      },
+      "random_forest": {
+        "per_pattern": {
+          "bursty_onoff": {
+            "n_samples": 1790,
+            "n_positive": 109,
+            "positive_rate": 0.06089385474860335,
+            "pr_auc": 0.8145901792386016,
+            "roc_auc": 0.9887408652560458,
+            "precision": 0.7105263157894737,
+            "recall": 0.7431192660550459,
+            "f1": 0.7264573991031391,
+            "accuracy": 0.9659217877094972,
+            "threshold": 0.5
+          },
+          "elephant_mice": {
+            "n_samples": 1798,
+            "n_positive": 450,
+            "positive_rate": 0.25027808676307006,
+            "pr_auc": 1.0,
+            "roc_auc": 1.0,
+            "precision": 1.0,
+            "recall": 0.7444444444444445,
+            "f1": 0.8535031847133758,
+            "accuracy": 0.9360400444938821,
+            "threshold": 0.5
+          },
+          "poisson": {
+            "n_samples": 1758,
+            "n_positive": 240,
+            "positive_rate": 0.13651877133105803,
+            "pr_auc": 0.6688652319422773,
+            "roc_auc": 0.9496267018006148,
+            "precision": 0.6428571428571429,
+            "recall": 0.525,
+            "f1": 0.5779816513761468,
+            "accuracy": 0.8953356086461889,
+            "threshold": 0.5
+          },
+          "ramp": {
+            "n_samples": 1638,
+            "n_positive": 303,
+            "positive_rate": 0.184981684981685,
+            "pr_auc": 0.8855453568047058,
+            "roc_auc": 0.9801559931274026,
+            "precision": 0.8582375478927203,
+            "recall": 0.7392739273927392,
+            "f1": 0.7943262411347517,
+            "accuracy": 0.9291819291819292,
+            "threshold": 0.5
+          },
+          "tcp_udp_mix": {
+            "n_samples": 1796,
+            "n_positive": 450,
+            "positive_rate": 0.2505567928730512,
+            "pr_auc": 1.0,
+            "roc_auc": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "threshold": 0.5
+          }
+        },
+        "mean_pr_auc": 0.8738,
+        "mean_f1": 0.7905
+      }
+    }
+  },
+  "inference_budget_ms": 50.0,
+  "inference_within_budget": true
+}

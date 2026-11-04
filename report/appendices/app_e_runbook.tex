@@ -1,0 +1,89 @@
+\chapter{System Reproduction Guide and Runbook}
+\label{app:runbook}
+
+This appendix provides a step-by-step operational runbook to reproduce all software builds, automated test suites, Mininet network emulations, and agentic AI features documented in this report.
+
+\section{System Prerequisites}
+The software stack requires a Linux environment with root network namespace permissions:
+\begin{itemize}
+  \item \textbf{Operating System}: Ubuntu 22.04 LTS or Arch Linux (Kernel $\ge 5.15$).
+  \item \textbf{Python}: Python 3.9 or 3.10 with virtual environment tools.
+  \item \textbf{Node.js \& npm}: Node.js $\ge 18.0$ (LTS) and npm $\ge 9.0$.
+  \item \textbf{Networking Packages}: \texttt{mininet}, \texttt{openvswitch-switch}, \texttt{iproute2}, \texttt{iperf3}.
+  \item \textbf{LaTeX Tooling}: \texttt{texlive-latex-base}, \texttt{texlive-latex-extra}, \texttt{texlive-fonts-recommended}.
+\end{itemize}
+
+\section{Environment Installation}
+Clone the repository and initialize the Python virtual environment:
+\begin{lstlisting}[language=bash]
+# 1. Clone repository and enter directory
+cd /opt/sdn-controller  # or path to project repository
+
+# 2. Activate virtual environment
+source .venv/bin/activate
+
+# 3. Install core Python dependencies
+pip install -r requirements.txt
+
+# 4. Install frontend npm dependencies
+npm --prefix future/dashboard/react-app install
+\end{lstlisting}
+
+\section{Running Automated Test Suites}
+The project enforces strict hermetic testing:
+
+\subsection{Unit and API Test Suite}
+Execute the complete pytest suite:
+\begin{lstlisting}[language=bash]
+PYTHONPATH=".:future" pytest tests/ -v
+\end{lstlisting}
+\textbf{Expected Result}: \texttt{17 passed} (100\% pass rate in $\sim$75 seconds).
+
+\subsection{Frontend TypeScript and Vite Build}
+Verify clean compilation of the React dashboard:
+\begin{lstlisting}[language=bash]
+npm --prefix future/dashboard/react-app run build
+\end{lstlisting}
+\textbf{Expected Result}: \texttt{tsc -b \&\& vite build} exits with code 0 (zero TypeScript errors).
+
+\section{Launching the Live System}
+The live interactive system is executed across three terminal daemons:
+
+\subsection{Daemon 1: Ryu OpenFlow 1.3 Controller}
+\begin{lstlisting}[language=bash]
+PYTHONPATH=".:future" ryu-manager \
+  --ofp-listen-host 127.0.0.1 \
+  --ofp-tcp-listen-port 6653 \
+  controller.sdn_controller
+\end{lstlisting}
+
+\subsection{Daemon 2: FastAPI Backend Service}
+\begin{lstlisting}[language=bash]
+PYTHONPATH=".:future" python -m uvicorn future.api.main:app \
+  --host 127.0.0.1 --port 8000
+\end{lstlisting}
+
+\subsection{Daemon 3: React Development Server}
+\begin{lstlisting}[language=bash]
+npm --prefix future/dashboard/react-app run dev
+\end{lstlisting}
+Open a web browser at \url{http://localhost:5173} to access the live dashboard.
+
+\section{Testing Autonomous Congestion and Remediation}
+To test the LangGraph agentic loop:
+\begin{enumerate}
+  \item On the top navigation bar, click the \textbf{Agentic AI} modal icon.
+  \item In the chat modal, click the quick action pill: \texttt{[Create Congestion (14M)]}.
+  \item Observe link $s_1 \leftrightarrow s_2$ surging to 88\% on the canvas and strip chart.
+  \item Type or click \texttt{[Fix Congestion]}.
+  \item Verify that the 5-stage LangGraph execution pipeline transitions to \texttt{COMPLETED}, installs Make-Before-Break flow rules, and validates telemetry recovery to 1.0\%.
+\end{enumerate}
+
+\section{Compiling this Technical Report}
+To compile this 30--35 page LaTeX technical report into high-resolution PDF format:
+\begin{lstlisting}[language=bash]
+cd report/
+pdflatex -interaction=nonstopmode main.tex
+pdflatex -interaction=nonstopmode main.tex
+\end{lstlisting}
+Two passes are executed to ensure complete resolution of cross-references, table of contents, list of figures, and list of tables. The output document is generated as \texttt{report/main.pdf}.

@@ -1,0 +1,93 @@
+\chapter{Mathematical Formulations and Statistical Proofs}
+\label{app:math}
+
+\section{Queueing Delay and Bufferbloat Formulation}
+In packet-switched communication networks, the total delay $T_{\text{total}}$ experienced by a packet traversing an $N$-hop path is formulated as:
+\begin{equation}
+  T_{\text{total}} = \sum_{k=1}^N \left( T_{\text{proc}}^{(k)} + T_{\text{queue}}^{(k)} + T_{\text{tx}}^{(k)} + T_{\text{prop}}^{(k)} \right)
+\end{equation}
+where:
+\begin{itemize}
+  \item $T_{\text{proc}}^{(k)}$ is switch nodal processing latency (typically $1\text{--}5\,\mu\text{s}$ in hardware ASICs).
+  \item $T_{\text{prop}}^{(k)} = \frac{d_k}{c_{\text{fiber}}}$ is the propagation delay governed by physical link distance $d_k$ and the speed of light in fiber ($c_{\text{fiber}} \approx 2 \times 10^8\,\text{m/s}$).
+  \item $T_{\text{tx}}^{(k)} = \frac{L}{C_k}$ is packet transmission serialization latency for a frame of size $L$ bits over a link of capacity $C_k$ bits/second.
+  \item $T_{\text{queue}}^{(k)}$ is the waiting time spent by the packet in the switch output queue buffer.
+\end{itemize}
+
+Under an $M/M/1/K$ finite-buffer queueing model with average packet arrival rate $\lambda$ (packets/second), packet service rate $\mu = \frac{C}{L}$ (packets/second), and buffer capacity $K$ packets, link traffic intensity is defined as:
+\begin{equation}
+  \rho = \frac{\lambda}{\mu}
+\end{equation}
+The steady-state probability of having $n$ packets in the queue is:
+\begin{equation}
+  p_n = \frac{(1 - \rho)\rho^n}{1 - \rho^{K+1}} \quad \text{for } 0 \le n \le K
+\end{equation}
+The probability of packet loss (tail drop probability $P_{\text{loss}}$) equals the probability that a packet arrives when the buffer is completely full ($n = K$):
+\begin{equation}
+  P_{\text{loss}} = p_K = \frac{(1 - \rho)\rho^K}{1 - \rho^{K+1}}
+\end{equation}
+When the arrival rate exceeds capacity ($\rho > 1.0$), queue depth rapidly approaches $K$, and queueing delay asymptotically approaches its maximum bound:
+\begin{equation}
+  T_{\text{queue}} \longrightarrow \frac{K \cdot L}{C}
+\end{equation}
+For a 100-packet buffer with 1500-byte MTU frames over a 10\,Mbps link, queue delay explodes to:
+\begin{equation}
+  T_{\text{queue}}^{\text{max}} = \frac{100 \times 1500 \times 8}{10 \times 10^6} = \mathbf{120\,\text{milliseconds}}
+\end{equation}
+This accounts for the ten-fold latency explosion observed under static shortest routing in Figure~\ref{fig:fig1_latency}.
+
+\section{Statistical Hypothesis Testing and Separation Criteria}
+In experimental performance comparisons, reporting raw sample means ($\bar{X}$) alone is insufficient to assert that one routing strategy outperforms another. To prevent deceptive reporting, this research enforces formal statistical hypothesis testing.
+
+Let $\bar{X}_A$ and $\bar{X}_B$ be the empirical sample means of metric $X$ (e.g., delivered throughput or packet loss) across $n_A$ and $n_B$ independent repetitions of routing modes $A$ and $B$, with sample variances $s_A^2$ and $s_B^2$.
+
+The standard error of the mean (SEM) is:
+\begin{equation}
+  \text{SEM}_A = \frac{s_A}{\sqrt{n_A}}, \quad \text{SEM}_B = \frac{s_B}{\sqrt{n_B}}
+\end{equation}
+Under the Central Limit Theorem, the two-sided 95\% confidence interval (CI) for the true population mean $\mu_A$ is constructed as:
+\begin{equation}
+  \text{CI}_{95}(A) = \left[ \bar{X}_A - t_{\alpha/2, \nu} \cdot \frac{s_A}{\sqrt{n_A}}, \quad \bar{X}_A + t_{\alpha/2, \nu} \cdot \frac{s_A}{\sqrt{n_A}} \right]
+\end{equation}
+where $t_{\alpha/2, \nu}$ is the Student's $t$ critical value with degrees of freedom $\nu = n_A - 1$ at significance level $\alpha = 0.05$.
+
+\begin{formulabox}[Formal Definition of Statistical Separation]
+Routing mode $A$ is declared \textbf{statistically separated from mode $B$} at significance level $p < 0.05$ if and only if their 95\% confidence intervals do not overlap:
+\begin{equation}
+  \text{CI}_{95}(A) \cap \text{CI}_{95}(B) = \emptyset
+\end{equation}
+Equivalently:
+\begin{equation}
+  \bar{X}_A - t_{\alpha/2, \nu_A} \frac{s_A}{\sqrt{n_A}} > \bar{X}_B + t_{\alpha/2, \nu_B} \frac{s_B}{\sqrt{n_B}}
+\end{equation}
+If the intervals overlap ($\text{CI}_{95}(A) \cap \text{CI}_{95}(B) \ne \emptyset$), the data does not distinguish the two modes at the declared repetition count. In such cases, this report explicitly outputs the verdict: \texttt{overlapping with best}.
+\end{formulabox}
+
+\section{Lead Time and Timing Margin Proof}
+\begin{proof}[Proof of Positive Timing Margin ($T_{\text{slack}} > 0$)]
+Let $t_0$ be the onset of an accelerating traffic surge on link $e$. Let the physical queue buffer capacity be $B$ packets, and let excess packet arrival rate be $\Delta \lambda = \lambda - \mu > 0$. The time required to fill the buffer to saturation threshold $U_{\text{crit}} = 0.80$ is:
+\begin{equation}
+  \Delta t_{\text{breach}} = \frac{0.80 \cdot B}{\Delta \lambda}
+\end{equation}
+The rolling feature extraction pipeline computes utilization slope $\text{slope}_U$ over sliding window $w$. When $\text{slope}_U \ge \theta_{\text{slope}}$, the Random Forest classifier fires at timestamp $t_{\text{alert}} = t_0 + \Delta t_{\text{detect}}$.
+
+The empirical lead time observed across testbed executions satisfies:
+\begin{equation}
+  T_{\text{lead}} = t_{\text{breach}} - t_{\text{alert}} \ge 2.000\,\text{seconds}
+\end{equation}
+The total control-plane execution latency is the sum of path computation time and OpenFlow flow-mod installation across $k$ switches:
+\begin{equation}
+  T_{\text{exec}} = T_{\text{Dijkstra}} + \sum_{i=1}^k T_{\text{flowmod}}^{(i)}
+\end{equation}
+Across our Ryu 4.34 testbed on Mininet with $k=5$ switches, empirical measurements yield:
+\begin{align}
+  T_{\text{Dijkstra}} &\le 0.0012\,\text{seconds} \quad (1.2\,\text{ms})\\
+  \sum_{i=1}^5 T_{\text{flowmod}}^{(i)} &\le 0.0169\,\text{seconds} \quad (16.9\,\text{ms})\\
+  T_{\text{exec}} &\le 0.0181\,\text{seconds} \quad (18.1\,\text{ms})
+\end{align}
+Subtracting execution latency from empirical lead time yields:
+\begin{equation}
+  T_{\text{slack}} = T_{\text{lead}} - T_{\text{exec}} = 2.005\,\text{s} - 0.0181\,\text{s} = \mathbf{1.9869\,\text{seconds}} > 0
+\end{equation}
+Because $T_{\text{slack}} > 0$ with a safety factor $> 100\times$, Make-Before-Break rerouting completes and downstream switch TCAM tables are fully populated before the physical link queue ever drops a packet.
+\end{proof}

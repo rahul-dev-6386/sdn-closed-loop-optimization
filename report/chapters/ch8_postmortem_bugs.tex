@@ -1,0 +1,125 @@
+\chapter{Engineering Post-Mortem and Lessons Learned}
+\label{ch:postmortem_bugs}
+
+\section{Methodological Philosophy: Diagnostic Rigor}
+In experimental systems research, software defects rarely manifest as clean, loud exceptions. More often, they present as silent statistical distortions: truncated runs that look like premature convergence, duplicate samples that bias variances, or synthetic traffic profiles that fail to exercise the datapath as designed.
+
+Rather than sweeping anomalous measurements under the rug or adjusting hyper-parameters to mask unexpected outputs, every discrepancy encountered during this project was diagnosed to root cause, solved at the architectural level, and guarded with automated mutation tests. This chapter documents five critical engineering failures and the architectural lessons derived from them.
+
+\section{Bug 1: The Silent Controller Pipe-Buffer Deadlock}
+\label{sec:bug_deadlock}
+
+\subsection{Symptom}
+During initial 90-second telemetry collection sweeps, telemetry output ceased abruptly approximately 24 seconds into every run. The collector emitted exactly 13 samples per link instead of the expected 45--47 samples. No Python exception was raised, no error was logged, and the Ryu process remained resident in memory. The controller was alive, but completely inert.
+
+\subsection{Root-Cause Analysis}
+Inspection of the controller management harness revealed that Ryu was spawned via Python's \texttt{subprocess.Popen} with standard output captured:
+\begin{lstlisting}[language=Python]
+# Faulty Spawn Pattern:
+proc = subprocess.Popen(["ryu-manager", ...], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+\end{lstlisting}
+In Linux, an anonymous pipe created by \texttt{subprocess.PIPE} is backed by a finite kernel circular buffer of default size 65,536 bytes (64\,KiB). The harness spawned the controller but never actively drained \texttt{stdout} during the run.
+
+Ryu writes verbose OpenFlow event logs for every \texttt{OFPT\_PACKET\_IN} and \texttt{OFPPortStatsReply}. Approximately 24 seconds into the run, the cumulative volume of log output exceeded 64\,KiB. At that point, Ryu's \texttt{sys.stdout.write()} blocked inside the Linux kernel waiting for pipe buffer space to free up. Because Ryu runs on Eventlet cooperative greenlets within a single OS process, blocking in a synchronous C-level write halted the entire Eventlet greenlet scheduler. The controller stopped dispatching OpenFlow events, freezing all network telemetry collection.
+
+\subsection{Architectural Fix and Verification}
+The fix replaces pipe buffers with non-blocking file descriptor redirection using a dedicated \texttt{ControllerLog} context manager:
+\begin{lstlisting}[language=Python,caption={Non-blocking controller file redirection.}]
+class ControllerLog:
+    def __init__(self, log_path: Path):
+        self.file = open(log_path, "wb")
+    def __enter__(self):
+        return self.file
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.file.close()
+
+# Safe Spawn:
+with ControllerLog(log_path) as log_file:
+    proc = subprocess.Popen(["ryu-manager", ...], stdout=log_file, stderr=subprocess.STDOUT)
+\end{lstlisting}
+A regular file descriptor on disk never applies back-pressure to the writing process, preventing kernel deadlock while preserving complete diagnostic logs. 
+
+\textbf{Verification}: Telemetry capture duration expanded from \textbf{24 seconds to 92 seconds}, and samples per link increased from \textbf{13 to 47}.
+
+\section{Bug 2: Duplicate Port-Stats Telemetry Measurements}
+\label{sec:bug_duplicate}
+
+\subsection{Symptom}
+During Phase 7 model training, \texttt{pandas} raised an exception during sliding-window time-series indexing:
+\begin{lstlisting}
+ValueError: series ('s4', 's2', 'forward', 'run_ramp_s43') has 1 duplicate timestamp(s)
+\end{lstlisting}
+
+\subsection{Root-Cause Analysis}
+The telemetry collection loop records timestamps derived from the switch's OpenFlow port-stats reply header (\texttt{duration\_sec} and \texttt{duration\_nsec}), representing the switch's internal monotonic clock. 
+
+However, the collection loop executed on a fixed 2.0-second timer. If an asynchronous OpenFlow reply was delayed due to control-plane congestion, the collection thread timed out and wrote the previous sample's cached values into the CSV file. When the delayed reply arrived, the collector wrote it with the identical switch timestamp. This resulted in identical measurements recorded twice, falsely skewing rolling means and reducing calculated rolling variance to zero.
+
+\subsection{Architectural Fix}
+The collector was refactored with an atomic \textbf{watermark gate}:
+\begin{lstlisting}[language=Python]
+class WatermarkGate:
+    def __init__(self):
+        self.last_timestamps = {}
+
+    def should_record(self, link_key: Tuple[str, str], current_ts: float) -> bool:
+        prev_ts = self.last_timestamps.get(link_key, -1.0)
+        if current_ts <= prev_ts:
+            return False  # Suppress duplicate measurement
+        self.last_timestamps[link_key] = current_ts
+        return True
+\end{lstlisting}
+Duplicate rows were eliminated completely across all 12,180 records.
+
+\section{Bug 3: The Fragility of Traffic Generation in Mininet}
+\label{sec:bug_traffic}
+
+\subsection{Symptom}
+During Phase 6 dataset collection, link utilization profiles for the \texttt{ramp} pattern did not exhibit a continuous stair-step progression (2 $\to$ 4 $\to$ 6 $\to$ 8 $\to$ 10 $\to$ 12\,Mbps). Instead, the link transitioned abruptly from 0\,Mbps to 10\,Mbps inside a single 2-second interval, mimicking a square wave.
+
+\subsection{Diagnosis and Failed Attempts}
+Inspection of \texttt{traffic/generate.py} revealed that the script invoked an individual \texttt{iperf3} process for each step in the ramp via Mininet's \texttt{node.cmd()}:
+\begin{lstlisting}[language=Python]
+while elapsed < duration:
+    h1.cmd(f"iperf3 -u -c 10.0.0.4 -b {rate}M -t {step_dur} &")
+    time.sleep(step_dur)
+\end{lstlisting}
+Two severe problems occurred:
+\begin{enumerate}
+  \item Mininet's \texttt{cmd()} allocates a pseudo-terminal (pty) and executes a subshell. This operation incurs hundreds of milliseconds of overhead, causing steps to be skipped.
+  \item When an \texttt{iperf3} process reached its declared $-t$ duration, it exited. If the subsequent command was delayed by even 50\,ms, interface traffic collapsed to zero between steps.
+\end{enumerate}
+
+\textbf{Failed Attempt 1}: Starting multiple background \texttt{iperf3} clients simultaneously. This caused socket port collisions and erratic bandwidth throttling.
+
+\textbf{Failed Attempt 2}: Launching daemonized \texttt{iperf3 -D} servers. In Mininet, processes spawned inside host network namespaces without detached session leaders are killed by the Linux kernel when the spawning pty terminates.
+
+\subsection{The Architectural Solution: Linux Traffic Control (TC)}
+The robust solution decouples traffic generation from process scheduling. We start \textbf{a single, long-lived \texttt{iperf3} client} offering maximum rate, and use the Linux kernel Traffic Control Token Bucket Filter (\texttt{tc qdisc tbf}) to shape the egress rate dynamically:
+\begin{lstlisting}[language=Python,caption={Kernel rate shaping via Linux TC.}]
+# Set interface rate directly in kernel:
+h1.cmd(f"tc qdisc change dev {iface} root tbf rate {rate}mbit burst 32kbit latency 50ms")
+\end{lstlisting}
+Because \texttt{tc} commands execute synchronously inside the kernel in sub-millisecond time, step transitions are instantaneous, perfectly continuous, and immune to userspace process teardown.
+
+\section{Bug 4: Substring Keyword Collision in Agent Chat}
+During early testing of the LangGraph agent, the operator prompt \textit{``fix the congestion''} caused the backend to trigger \texttt{inject\_congestion()} rather than \texttt{run\_mitigation()}. 
+
+The root cause was a naive substring check in the FastAPI router:
+\begin{lstlisting}[language=Python]
+# Buggy check:
+if "congest" in msg.lower():
+    inject_congestion()
+\end{lstlisting}
+Because the word \textit{congestion} contains \textit{congest}, the mitigation request matched the injection branch. As detailed in Chapter~\ref{ch:agentic_ai}, this was resolved by establishing strict priority-ordered keyword matching, placing mitigation keywords ahead of injection keywords.
+
+\section{Bug 5: Z-Index Bleed-Through on Topology Canvas}
+In the React frontend, when the LangGraph agent modal was opened, SVG link paths and animated traffic particles from the background canvas remained clickable and visually bled through the modal backdrop. 
+
+Inspection of CSS styles revealed that canvas SVG elements were nested in a stacking context with \texttt{z-index: 1000}, while the modal backdrop had \texttt{z-index: 1000}. By explicitly establishing a global design system token:
+\begin{lstlisting}
+.modal-backdrop {
+  z-index: 99999; /* Ensure modal isolates over all canvas SVG layers */
+}
+\end{lstlisting}
+the visual bleed-through was eliminated across all browser viewports.

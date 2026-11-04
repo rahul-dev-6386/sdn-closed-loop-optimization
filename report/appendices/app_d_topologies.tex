@@ -1,0 +1,71 @@
+\chapter{Full Network Topology Catalog}
+\label{app:topologies}
+
+This appendix documents the ten network architectures implemented in the SDN catalog (\texttt{future/api/topologies\_catalog.py}), covering datacenter, wide-area, campus, and multi-stage fabrics.
+
+\section{Catalog Summary Matrix}
+\begin{table}[H]
+  \centering
+  \small
+  \caption{SDN Network Topology Catalog (10 Architectures).}
+  \label{tab:topology_matrix}
+  \begin{tabularx}{\textwidth}{l l c c p{2.2cm} X}
+    \toprule
+    \textbf{ID} & \textbf{Name} & \textbf{Nodes} & \textbf{Links} & \textbf{Bottleneck} & \textbf{Architectural Domain} \\
+    \midrule
+    \texttt{diamond} & Classic Diamond & 4 Sw / 2 H & 6 & \texttt{s1--s2} (10M) & Canonical 2-path multipath fabric. \\
+    \texttt{fat\_tree} & Fat-Tree Clos & 8 Sw / 4 H & 12 & \texttt{a1--c1} (40M) & Hierarchical 2-tier datacenter fabric. \\
+    \texttt{spine\_leaf} & Spine-Leaf & 6 Sw / 2 H & 10 & \texttt{lf1--sp1} (25M) & Non-blocking East-West cloud fabric. \\
+    \texttt{abilene} & Internet2 Abilene & 11 Sw / 2 H & 16 & \texttt{DEN--ORD} (10M) & Continental US Wide-Area Network. \\
+    \texttt{linear} & Linear Chain & 5 Sw / 2 H & 6 & \texttt{s2--s3} (10M) & Cascading pipeline queue testbed. \\
+    \texttt{ring} & Cyclic Ring & 6 Sw / 2 H & 8 & \texttt{r1--r2} (15M) & Fault-tolerant ring with loop guards. \\
+    \texttt{grid} & $3 \times 3$ Mesh Grid & 9 Sw / 2 H & 14 & \texttt{g11--g12} (15M) & Multi-hop planar grid network. \\
+    \texttt{clos} & 3-Stage Clos & 7 Sw / 2 H & 14 & \texttt{in1--mid1} (20M) & Telecommunications switching fabric. \\
+    \texttt{mesh} & Full Core Mesh & 5 Sw / 2 H & 12 & \texttt{m1--m2} (10M) & Fully meshed core transit network. \\
+    \texttt{star} & Hub-and-Spoke & 5 Sw / 4 H & 8 & \texttt{hub--sp1} (10M) & Enterprise campus aggregation core. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\section{Detailed Specification of Representative Topologies}
+
+\subsection{1. Classic Diamond Fabric (\texttt{diamond})}
+\begin{itemize}
+  \item \textbf{Switches}: $s_1, s_2, s_3, s_4$. \textbf{Hosts}: $h_1$ (10.0.0.1) on $s_1$, $h_4$ (10.0.0.4) on $s_4$.
+  \item \textbf{Core Interconnects}:
+    \begin{itemize}
+      \item $s_1 \leftrightarrow s_2$: 10.0\,Mbps, 5.0\,ms delay (Primary bottleneck link).
+      \item $s_1 \leftrightarrow s_3$: 10.0\,Mbps, 5.0\,ms delay (Detour ingress link).
+      \item $s_2 \leftrightarrow s_4$: 10.0\,Mbps, 5.0\,ms delay (Primary egress link).
+      \item $s_3 \leftrightarrow s_4$: 10.0\,Mbps, 5.0\,ms delay (Detour egress link).
+    \end{itemize}
+  \item \textbf{Default Shortest Path}: $h_1 \to s_1 \to s_2 \to s_4 \to h_4$.
+  \item \textbf{Autonomous Detour Path}: $h_1 \to s_1 \to s_3 \to s_4 \to h_4$.
+\end{itemize}
+
+\subsection{2. Internet2 Abilene Continental WAN (\texttt{abilene})}
+\begin{itemize}
+  \item \textbf{Core Switches (11 PoPs)}: Seattle (\texttt{SEA}), Sunnyvale (\texttt{SFO}), Los Angeles (\texttt{LAX}), Denver (\texttt{DEN}), Dallas (\texttt{DFW}), Chicago (\texttt{ORD}), Atlanta (\texttt{ATL}), Indianapolis (\texttt{IND}), Washington D.C. (\texttt{WDC}), New York City (\texttt{NYC}).
+  \item \textbf{Hosts}: $h_{\text{west}}$ on \texttt{SFO}, $h_{\text{east}}$ on \texttt{NYC}.
+  \item \textbf{Key Interconnects}:
+    \begin{itemize}
+      \item $\text{SFO} \leftrightarrow \text{DEN}$: 100\,Mbps, 14.0\,ms.
+      \item $\text{DEN} \leftrightarrow \text{ORD}$: 10\,Mbps, 12.0\,ms (\textbf{Critical WAN Bottleneck Link}).
+      \item $\text{ORD} \leftrightarrow \text{NYC}$: 100\,Mbps, 10.0\,ms.
+      \item $\text{SFO} \leftrightarrow \text{LAX}$: 100\,Mbps, 6.0\,ms.
+      \item $\text{LAX} \leftrightarrow \text{DFW}$: 100\,Mbps, 18.0\,ms.
+      \item $\text{DFW} \leftrightarrow \text{ATL}$: 100\,Mbps, 11.0\,ms.
+      \item $\text{ATL} \leftrightarrow \text{WDC}$: 100\,Mbps, 8.0\,ms.
+      \item $\text{WDC} \leftrightarrow \text{NYC}$: 100\,Mbps, 4.0\,ms.
+    \end{itemize}
+  \item \textbf{Primary Route (3 Hops)}: $\text{SFO} \to \text{DEN} \to \text{ORD} \to \text{NYC}$.
+  \item \textbf{Autonomous Detour Route (5 Hops)}: $\text{SFO} \to \text{LAX} \to \text{DFW} \to \text{ATL} \to \text{WDC} \to \text{NYC}$.
+\end{itemize}
+
+\subsection{3. Datacenter Fat-Tree Fabric (\texttt{fat\_tree})}
+\begin{itemize}
+  \item \textbf{Core Tier}: $c_1, c_2$ (40\,Mbps inter-tier uplinks).
+  \item \textbf{Aggregation Tier}: $a_1, a_2$ (20\,Mbps downlinks).
+  \item \textbf{Edge Tier}: $e_1, e_2, e_3, e_4$ (Top-of-Rack switches connected to hosts $h_1, h_2, h_3, h_4$).
+  \item \textbf{Path Redundancy}: Cross-pod traffic can transit either Core Switch $c_1$ or Core Switch $c_2$.
+\end{itemize}

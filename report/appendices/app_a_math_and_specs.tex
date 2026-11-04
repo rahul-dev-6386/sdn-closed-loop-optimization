@@ -1,0 +1,184 @@
+\chapter[Mathematical Formulations and Protocol Specs]{Mathematical Formulations and Protocol Specifications}
+\label{app:math_and_specs}
+
+\section{Queueing Delay and Bufferbloat Formulation}
+In packet-switched communication networks, the total delay $T_{\text{total}}$ experienced by a packet traversing an $N$-hop path is formulated as:
+\begin{equation}
+  T_{\text{total}} = \sum_{k=1}^N \left( T_{\text{proc}}^{(k)} + T_{\text{queue}}^{(k)} + T_{\text{tx}}^{(k)} + T_{\text{prop}}^{(k)} \right)
+\end{equation}
+where $T_{\text{proc}}^{(k)}$ is switch nodal processing latency ($1\text{--}5\,\mu\text{s}$), $T_{\text{prop}}^{(k)} = \frac{d_k}{c_{\text{fiber}}}$ is propagation delay, $T_{\text{tx}}^{(k)} = \frac{L}{C_k}$ is packet transmission serialization latency for a frame of size $L$ bits over a link of capacity $C_k$, and $T_{\text{queue}}^{(k)}$ is queue waiting time.
+
+Under an $M/M/1/K$ finite-buffer queueing model with average packet arrival rate $\lambda$, packet service rate $\mu = \frac{C}{L}$, and buffer capacity $K$ packets, traffic intensity is $\rho = \frac{\lambda}{\mu}$. The steady-state probability of having $n$ packets in queue is:
+\begin{equation}
+  p_n = \frac{(1 - \rho)\rho^n}{1 - \rho^{K+1}} \quad \text{for } 0 \le n \le K
+\end{equation}
+The tail drop packet loss probability equals:
+\begin{equation}
+  P_{\text{loss}} = p_K = \frac{(1 - \rho)\rho^K}{1 - \rho^{K+1}}
+\end{equation}
+When arrival rate exceeds capacity ($\rho > 1.0$), queue depth rapidly approaches $K$, and queueing delay asymptotically approaches its maximum bound:
+\begin{equation}
+  T_{\text{queue}} \longrightarrow \frac{K \cdot L}{C}
+\end{equation}
+For a 100-packet buffer with 1500-byte MTU frames over a 10\,Mbps link, queue delay explodes to:
+\begin{equation}
+  T_{\text{queue}}^{\text{max}} = \frac{100 \times 1500 \times 8}{10 \times 10^6} = \mathbf{120\,\text{milliseconds}}
+\end{equation}
+This accounts for the theoretical upper bound on queueing latency. In our empirical Mininet evaluation under moderate offered loads ($\approx 1.72$\,Mbps across 10\,Mbps links), queue depths remained well below maximum buffer capacity, resulting in measured mean packet latencies clustering around 12–14\,ms across all modes (Figure~\ref{fig:fig1_latency}).
+
+\section{Statistical Hypothesis Testing and Significance Formulation}
+To rigorously assess whether observed metric differences between routing strategies represent statistically significant treatment effects rather than random noise, we employ both parametric and non-parametric hypothesis tests.
+
+Let $\bar{X}_A$ and $\bar{X}_B$ be empirical sample means of metric $X$ across $n_A$ and $n_B$ independent repetitions of routing modes $A$ and $B$, with sample standard deviations $s_A$ and $s_B$. Because sample variances between routing modes are unequal (heteroscedastic), we apply \textbf{Welch's two-sample $t$-test}:
+\begin{equation}
+  t = \frac{\bar{X}_A - \bar{X}_B}{\sqrt{\frac{s_A^2}{n_A} + \frac{s_B^2}{n_B}}}
+\end{equation}
+where the effective degrees of freedom $\nu$ are estimated via the Welch--Satterthwaite equation:
+\begin{equation}
+  \nu \approx \frac{\left( \frac{s_A^2}{n_A} + \frac{s_B^2}{n_B} \right)^2}{\frac{(s_A^2/n_A)^2}{n_A - 1} + \frac{(s_B^2/n_B)^2}{n_B - 1}}
+\end{equation}
+To avoid distributional normality assumptions given $n=4$ repetitions per mode, we also compute the non-parametric \textbf{Mann--Whitney $U$ test}:
+\begin{equation}
+  U_A = R_A - \frac{n_A(n_A + 1)}{2}
+\end{equation}
+where $R_A$ is the sum of ranks assigned to observations from group $A$.
+
+\begin{formulabox}[Empirical Test Results: Bursty Traffic Ramp Goodput]
+Comparing \texttt{ml\_aware} ($1.7265 \pm 0.0024$\,Mbps, $n=4$) against \texttt{static\_shortest} ($1.7191 \pm 0.0019$\,Mbps, $n=4$):
+\begin{itemize}[noitemsep]
+  \item \textbf{Welch's $t$-test}: $t = 4.817$, $\nu = 5.71$, two-tailed $p = 0.0033 < 0.01$.
+  \item \textbf{Mann--Whitney $U$ test}: $U = 16.0$ (maximum rank separation), exact two-tailed $p = 0.0286 < 0.05$.
+  \item \textbf{Practical Effect Size}: Absolute difference $\Delta = +0.0074$\,Mbps ($+7.4$\,Kbps, a $+0.43\%$ goodput increase).
+\end{itemize}
+While statistically distinguishable under formal significance testing ($p < 0.05$), we emphasize that under light link stress (1.72\,Mbps on 10\,Mbps links), this goodput gain is modest. The principal empirical contribution of proactive ML control remains queue bufferbloat avoidance rather than high-throughput expansion.
+\end{formulabox}
+
+\section{Lead Time and Timing Margin Formulation}
+\begin{proof}[Formulation of Operational Timing Slack ($T_{\text{slack}}$)]
+Let $t_0$ be the physical onset of an escalating traffic surge on bottleneck link $e$. In a polling-based SDN architecture with interval $T_{\text{poll}} = 2.0\,\text{s}$ ($0.5\,\text{Hz}$), the surge may arrive at any instant within the cycle, introducing a \textbf{polling phase delay} $T_{\text{poll\_delay}} \in [0, T_{\text{poll}}]$.
+At timestamp $t_{\text{poll}}$, switch counter deltas are ingested. The rolling feature pipeline computes stationary temporal features over window $w=12$, and the Random Forest classifier executes inference in $T_{\text{infer}} \approx 1.2\,\text{ms}$.
+Upon detecting $p \ge 0.50$, Dijkstra's constrained path synthesis completes in $T_{\text{compute}} \approx 0.5\,\text{ms}$, and OpenFlow 1.3 barrier-synchronized Make-Before-Break flow-mods are installed across transit switches in $T_{\text{flowmod}} \approx 18.1\,\text{ms}$. Total controller turnaround is:
+\begin{equation}
+  T_{\text{ctrl}} = T_{\text{infer}} + T_{\text{compute}} + T_{\text{flowmod}} \approx 1.2\,\text{ms} + 0.5\,\text{ms} + 18.1\,\text{ms} \approx 19.8\,\text{ms}
+\end{equation}
+The operational timing slack is defined as:
+\begin{equation}
+  T_{\text{slack}} = (T_{\text{breach}} - T_{\text{detect}}) - (T_{\text{poll\_delay}} + T_{\text{ctrl}})
+\end{equation}
+Given empirical early warning lead time $(T_{\text{breach}} - T_{\text{detect}}) \approx 2.005\,\text{s}$ (bounded by the 2.0-second discrete polling quantum plus label guard-band):
+\begin{enumerate}[noitemsep]
+  \item \textbf{Favorable Phase Alignment ($T_{\text{poll\_delay}} \approx 0$)}:
+  \begin{equation}
+    T_{\text{slack}} \approx 2.005\,\text{s} - 0.0198\,\text{s} \approx \mathbf{1.985\,\text{seconds}} > 0
+  \end{equation}
+  Detour paths are established well in advance of buffer accumulation.
+  \item \textbf{Worst-Case Phase Alignment ($T_{\text{poll\_delay}} \to 2.0\,\text{s}$)}:
+  \begin{equation}
+    T_{\text{slack}} \approx 2.005\,\text{s} - 2.000\,\text{s} - 0.0198\,\text{s} \approx \mathbf{-0.015\,\text{seconds}} \le 0
+  \end{equation}
+  The controller operates at the threshold of reactivity, proving that telemetry polling frequency directly governs the operational boundary of proactive network control.
+\end{enumerate}
+\end{proof}
+
+\section{OpenFlow 1.3 Flow Modification Packet Structure}
+Figure~\ref{fig:ofp_flow_mod_binary} specifies the binary byte layout of an OpenFlow 1.3 \texttt{OFPT\_FLOW\_MOD} message used by the Ryu controller to program forwarding rules in switch TCAM tables.
+
+\begin{figure}[H]
+  \centering
+  \scriptsize\ttfamily
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{|p{0.22\textwidth}|p{0.22\textwidth}|p{0.22\textwidth}|p{0.22\textwidth}|}
+    \hline
+    \multicolumn{4}{|c|}{\textbf{OpenFlow Header (8 Bytes)}}\\
+    \hline
+    Version (0x04) & Type (0x0E = FLOW\_MOD) & \multicolumn{2}{c|}{Length (variable)}\\
+    \hline
+    \multicolumn{4}{|c|}{Transaction ID (XID)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Flow Mod Body (40 Bytes)}}\\
+    \hline
+    \multicolumn{2}{|c|}{Cookie (64 bits, upper)} & \multicolumn{2}{c|}{Cookie (64 bits, lower)}\\
+    \hline
+    \multicolumn{2}{|c|}{Cookie Mask (64 bits, upper)} & \multicolumn{2}{c|}{Cookie Mask (64 bits, lower)}\\
+    \hline
+    Table ID (0x00) & Command (0x00=ADD / 0x01=MODIFY) & \multicolumn{2}{c|}{Idle Timeout (seconds)}\\
+    \hline
+    \multicolumn{2}{|c|}{Hard Timeout (60 seconds)} & \multicolumn{2}{c|}{Priority (e.g. 200 for Detour)}\\
+    \hline
+    \multicolumn{2}{|c|}{Buffer ID (0xFFFFFFFF = NONE)} & \multicolumn{2}{c|}{Out Port (OFPP\_ANY)}\\
+    \hline
+    \multicolumn{2}{|c|}{Out Group (OFPG\_ANY)} & \multicolumn{2}{c|}{Flags (OFPFF\_SEND\_FLOW\_REM)}\\
+    \hline
+    \multicolumn{4}{|c|}{Pad (2 Bytes)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Match Structure (\texttt{struct ofp\_match}, Variable Length)}}\\
+    \hline
+    Type (0x01 = OXM) & Length (18) & \multicolumn{2}{c|}{OXM Fields (In\_Port, Eth\_Type, IPv4\_Dst)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Instructions (\texttt{struct ofp\_instruction}, Variable Length)}}\\
+    \hline
+    Type (0x04 = APPLY\_ACTIONS) & Length & \multicolumn{2}{c|}{Pad}\\
+    \hline
+    \multicolumn{4}{|c|}{Action: \texttt{OFPAT\_OUTPUT} $\to$ Egress Port Number}\\
+    \hline
+  \end{tabular}
+  \caption{Binary structure of OpenFlow 1.3 Flow Modification message (\texttt{OFPT\_FLOW\_MOD}).}
+  \label{fig:ofp_flow_mod_binary}
+\end{figure}
+
+\section{FastAPI RESTful API Specification}
+The backend service exposes RESTful JSON endpoints protected by bearer token authentication.
+
+\subsection{Authentication and Token Issue}
+\begin{itemize}[noitemsep]
+  \item \textbf{Route}: \texttt{POST /api/auth/login}
+  \item \textbf{Request}: \texttt{\{"username": "operator", "password": "<REDACTED\_PASSWORD>"\}}
+  \item \textbf{Response}: \texttt{\{"access\_token": "eyJhbGci...", "token\_type": "bearer"\}}
+\end{itemize}
+
+\subsection{Agent Interaction and Intent Router}
+\begin{itemize}[noitemsep]
+  \item \textbf{Route}: \texttt{POST /api/agent/chat}
+  \item \textbf{Request Schema}: \texttt{\{"message": "fix the congestion", "topology\_id": "diamond"\}}
+  \item \textbf{Response Schema (LangGraph Execution Output)}:
+\begin{lstlisting}[language=json]
+{
+  "status": "completed",
+  "topology_id": "diamond",
+  "bottleneck_link": "s1--s2",
+  "congestion_detected": true,
+  "mitigation_plan": "Make-Before-Break Detour via s3--s4",
+  "execution_result": {"success": true, "flow_mods_installed": 2, "latency_ms": 18.1},
+  "verification_result": {"status": "PASS", "bottleneck_util_pct": 1.0, "relieved": true}
+}
+\end{lstlisting}
+\end{itemize}
+
+\subsection{Synthetic Congestion Creation Endpoint}
+\begin{itemize}[noitemsep]
+  \item \textbf{Route}: \texttt{POST /api/agent/create-congestion}
+  \item \textbf{Request}: \texttt{\{"topology\_id": "diamond", "rate\_mbps": 14.0\}}
+  \item \textbf{Response}: \texttt{\{"status": "congested", "bottleneck": "s1--s2", "target\_utilization": 88.0\}}
+\end{itemize}
+
+\section{WebSocket Real-Time Broadcast Schema}
+Real-time telemetry and state changes are streamed over \texttt{ws://localhost:8000/ws/telemetry} at 2\,Hz:
+\begin{lstlisting}[language=json]
+{
+  "type": "telemetry_update",
+  "timestamp": 1730592000.124,
+  "topology_id": "diamond",
+  "mode": "simulated",
+  "links": [{
+    "link_id": "s1--s2", "src": "s1", "dst": "s2",
+    "capacity_mbps": 10.0, "tx_rate_mbps": 8.8,
+    "utilization_pct": 88.0, "loss_rate_pct": 0.0,
+    "ml_hazard_prob": 0.88, "is_congested": true
+  }],
+  "agent_pipeline": {
+    "current_stage": "STAGE_5_VERIFY",
+    "stage_status": "COMPLETED",
+    "last_action": "Detour installed via s3--s4"
+  }
+}
+\end{lstlisting}

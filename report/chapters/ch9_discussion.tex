@@ -1,0 +1,52 @@
+\chapter{Discussion and Operational Safety}
+\label{ch:discussion}
+
+\section{Operational Safety and Fail-Safe Defaults}
+Deploying autonomous machine learning and agentic AI systems into operational production networks introduces significant safety challenges. If an autonomous agent behaves erratically or misinterprets telemetry, network outages can cascade rapidly.
+
+The platform implements five strict operational safety principles:
+\begin{enumerate}
+  \item \textbf{Deterministic Policy Boundaries}: The machine learning model and LLM agent are never granted raw access to arbitrary switch command lines. They are restricted to a closed vocabulary of parameterized actions: \texttt{SWITCH\_MODE}, \texttt{TOGGLE\_DETOUR}, and \texttt{SET\_RATE\_LIMIT}.
+  \item \textbf{Provably-Safe Routing Invariants}: Every synthesized detour path is checked for loop-freedom using cycle detection in NetworkX before rules are dispatched to the OpenFlow controller.
+  \item \textbf{Automatic Rollback on Verification Failure}: If post-reroute verification does not detect link utilization falling below 80\% within $T_{\text{verify}} = 4.0$\,seconds, the controller automatically rolls back the detour rules and restores default shortest-path forwarding.
+  \item \textbf{Hard Timeout Bounds}: All installed detour flow entries carry an OpenFlow \texttt{hard\_timeout = 60} seconds. If the controller experiences a total partition, rules automatically age out in switch hardware, restoring static baseline forwarding.
+  \item \textbf{High-Precision Deterministic Fallback}: If the OpenRouter LLM API encounters network disconnects, latency exceeding 5.0\,seconds, or emits truncated responses ($\le 10$ characters), the agent seamlessly drops back to hardcoded deterministic domain expert reasoning rules.
+\end{enumerate}
+
+\section{TCAM Memory Bounds and Scalability}
+Hardware OpenFlow switches implement flow tables using Ternary Content-Addressable Memory (TCAM). TCAM provides single-cycle parallel pattern matching across wildcards but is constrained in capacity (typically 2,000 to 8,000 flow entries in commodity switches) and consumes significant power.
+
+A naive SDN proactive controller that installs fine-grained, per-flow rules for every active host connection would rapidly exhaust TCAM capacity (flow table overflow). 
+
+\begin{formulabox}[TCAM Rule Footprint Optimization]
+To minimize TCAM consumption, the platform uses \textbf{hierarchical wildcard prefix aggregation}. Rather than matching individual transport flows ($\text{IP}_{\text{src}}, \text{Port}_{\text{src}}, \text{IP}_{\text{dst}}, \text{Port}_{\text{dst}}$), detour rules match coarse subnet prefixes or designated DSCP/DiffServ traffic classes:
+\begin{equation}
+  N_{\text{TCAM}} = \mathcal{O}(|P_{\text{detour}}|) \quad \text{instead of} \quad \mathcal{O}(|\text{Flows}| \cdot |P_{\text{detour}}|)
+\end{equation}
+For an 11-node network such as the Abilene WAN, activating a 5-hop detour requires installing exactly \textbf{5 flow entries} across the fabric, consuming less than $0.1\%$ of available switch TCAM capacity.
+\end{formulabox}
+
+\section{Route Flapping and Hysteresis Dampening}
+A frequent pathology in dynamic traffic engineering is \textbf{route flapping} (or route oscillation). When traffic on Link $A$ approaches 80\%, the controller diverts flows to Link $B$. Consequently, Link $A$ load drops to 10\%, while Link $B$ jumps to 85\%. If the controller immediately reacts by shifting traffic back to Link $A$, flows bounce between paths perpetually, causing out-of-order packet delivery and TCP throughput degradation.
+
+To prevent route flapping, the decision engine enforces a \textbf{three-tier hysteresis dampening filter}:
+\begin{enumerate}
+  \item \textbf{Dwell Time ($T_{\text{dwell}} = 10$\,s)}: Once a detour path is installed, it remains locked for a minimum dwell duration regardless of short-term telemetry fluctuations.
+  \item \textbf{Cooldown Timer ($T_{\text{cooldown}} = 15$\,s)}: Following any reroute or rollback event, subsequent routing modifications are prohibited for 15 seconds.
+  \item \textbf{Improvement Ratio Threshold ($\Delta_{\text{thresh}} = 1.25$)}: An alternate path is selected only if its calculated cost represents at least a 25\% improvement over the current path, filtering out marginal fluctuations.
+\end{enumerate}
+
+\section{Adversarial Telemetry and Security Considerations}
+In production environments, telemetry channels can be subject to manipulation or sensor failure.
+\begin{itemize}
+  \item \textbf{Stale Counter Detection}: Every telemetry record carries a monotonic switch duration timer. If a switch's timer does not advance between polling intervals, the collector flags the record as \texttt{is\_stale=True} and discards it from the machine learning inference pipeline.
+  \item \textbf{LLM Prompt Injection Defense}: In the LangGraph agent layer, natural language operator prompts are never concatenated directly into system instructions without validation. All inputs are sanitized, and the system prompt strictly enforces that the LLM can only select actions from a predefined enumerated JSON schema.
+\end{itemize}
+
+\section{Threats to Validity and Study Limitations}
+In the interest of scientific integrity, several limitations of the current study must be acknowledged:
+\begin{enumerate}
+  \item \textbf{Emulated vs. Physical Hardware ASICs}: While Mininet executes real Linux kernel networking stacks and Open vSwitch datapaths, software switches exhibit different packet buffering dynamics than fixed-pipeline hardware ASICs (e.g., Broadcom Tomahawk or Intel Tofino). Future work will validate the system on hardware P4/OpenFlow testbeds.
+  \item \textbf{Flow Granularity}: The current implementation reroutes traffic at the aggregate prefix level. In ultra-scale cloud datacenters, sub-flowlet or packet-level spraying (e.g., via selective packet dispersion) could provide even finer load balancing, albeit with potential packet reordering risks.
+  \item \textbf{Single Controller Domain}: The architecture assumes a logically centralized Ryu controller instance. For multi-domain carrier backbones spanning millions of flows, distributed hierarchical controller clusters (such as ONOS or OpenDaylight) would be required.
+\end{enumerate}

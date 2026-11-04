@@ -1,0 +1,173 @@
+\chapter{OpenFlow 1.3 Specifications and API Schemas}
+\label{app:api_flowmod}
+
+\section{OpenFlow 1.3 Flow Modification Packet Structure}
+Figure~\ref{fig:ofp_flow_mod_binary} specifies the binary byte-level layout of an OpenFlow 1.3 \texttt{OFPT\_FLOW\_MOD} message used by the Ryu controller to program forwarding rules in switch TCAM tables.
+
+\begin{figure}[H]
+  \centering
+  \small\ttfamily
+  \begin{tabular}{|c|c|c|c|}
+    \hline
+    \multicolumn{4}{|c|}{\textbf{OpenFlow Header (8 Bytes)}}\\
+    \hline
+    Version (0x04) & Type (0x0E = FLOW\_MOD) & \multicolumn{2}{c|}{Length (variable)}\\
+    \hline
+    \multicolumn{4}{|c|}{Transaction ID (XID)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Flow Mod Body (40 Bytes)}}\\
+    \hline
+    \multicolumn{2}{|c|}{Cookie (64 bits, upper)} & \multicolumn{2}{c|}{Cookie (64 bits, lower)}\\
+    \hline
+    \multicolumn{2}{|c|}{Cookie Mask (64 bits, upper)} & \multicolumn{2}{c|}{Cookie Mask (64 bits, lower)}\\
+    \hline
+    Table ID (0x00) & Command (0x00=ADD / 0x01=MODIFY) & \multicolumn{2}{c|}{Idle Timeout (seconds)}\\
+    \hline
+    \multicolumn{2}{|c|}{Hard Timeout (60 seconds)} & \multicolumn{2}{c|}{Priority (e.g. 200 for Detour)}\\
+    \hline
+    \multicolumn{2}{|c|}{Buffer ID (0xFFFFFFFF = NONE)} & \multicolumn{2}{c|}{Out Port (OFPP\_ANY)}\\
+    \hline
+    \multicolumn{2}{|c|}{Out Group (OFPG\_ANY)} & \multicolumn{2}{c|}{Flags (OFPFF\_SEND\_FLOW\_REM)}\\
+    \hline
+    \multicolumn{4}{|c|}{Pad (2 Bytes)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Match Structure (\texttt{struct ofp\_match}, Variable Length)}}\\
+    \hline
+    Type (0x01 = OXM) & Length (e.g. 18) & \multicolumn{2}{c|}{OXM Fields (In\_Port, Eth\_Type, IPv4\_Dst)}\\
+    \hline
+    \multicolumn{4}{|c|}{\textbf{Instructions (\texttt{struct ofp\_instruction}, Variable Length)}}\\
+    \hline
+    Type (0x04 = APPLY\_ACTIONS) & Length & \multicolumn{2}{c|}{Pad}\\
+    \hline
+    \multicolumn{4}{|c|}{Action: \texttt{OFPAT\_OUTPUT} $\to$ Egress Port Number}\\
+    \hline
+  \end{tabular}
+  \caption{Binary structure of OpenFlow 1.3 Flow Modification message (\texttt{OFPT\_FLOW\_MOD}).}
+  \label{fig:ofp_flow_mod_binary}
+\end{figure}
+
+\section{FastAPI RESTful API Specification}
+The backend service exposes RESTful JSON endpoints protected by bearer token authentication.
+
+\subsection{Authentication and Token Issue}
+\begin{itemize}
+  \item \textbf{Route}: \texttt{POST /api/auth/login}
+  \item \textbf{Request Schema}:
+  \begin{lstlisting}[language=json]
+  {
+    "username": "adminuser",
+    "password": "<REDACTED_PASSWORD>"
+  }
+  \end{lstlisting}
+  \item \textbf{Response Schema}:
+  \begin{lstlisting}[language=json]
+  {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "bearer",
+    "expires_in": 86400
+  }
+  \end{lstlisting}
+\end{itemize}
+
+\subsection{Agent Interaction and Natural-Language Intent Router}
+\begin{itemize}
+  \item \textbf{Route}: \texttt{POST /api/agent/chat}
+  \item \textbf{Request Schema}:
+  \begin{lstlisting}[language=json]
+  {
+    "message": "fix the congestion on bottleneck s1--s2",
+    "topology_id": "diamond"
+  }
+  \end{lstlisting}
+  \item \textbf{Response Schema (LangGraph Execution Output)}:
+  \begin{lstlisting}[language=json]
+  {
+    "status": "completed",
+    "task": "fix the congestion on bottleneck s1--s2",
+    "topology_id": "diamond",
+    "bottleneck_link": "s1--s2",
+    "congestion_detected": true,
+    "mitigation_plan": "Make-Before-Break Detour via h1 -> s1 -> s3 -> s4 -> h2",
+    "execution_result": {
+      "success": true,
+      "flow_mods_installed": 2,
+      "latency_ms": 18.1
+    },
+    "verification_result": {
+      "status": "PASS",
+      "bottleneck_util_pct": 1.0,
+      "relieved": true
+    },
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "**Autonomous Congestion Mitigation Completed**\n- **Bottleneck Resolved:** `s1--s2`\n- **Telemetry Result:** 88.0% -> 1.0% (relieved)\n- **Action:** Installed 2 Make-Before-Break flow-mods in 18.1ms.\n- **Verdict:** **VERIFIED PASS**"
+      }
+    ]
+  }
+  \end{lstlisting}
+\end{itemize}
+
+\subsection{Synthetic Congestion Creation Endpoint}
+\begin{itemize}
+  \item \textbf{Route}: \texttt{POST /api/agent/create-congestion}
+  \item \textbf{Request Schema}:
+  \begin{lstlisting}[language=json]
+  {
+    "topology_id": "diamond",
+    "rate_mbps": 14.0
+  }
+  \end{lstlisting}
+  \item \textbf{Response Schema}:
+  \begin{lstlisting}[language=json]
+  {
+    "status": "congested",
+    "topology_id": "diamond",
+    "bottleneck_link": "s1--s2",
+    "offered_rate_mbps": 14.0,
+    "bottleneck_util_pct": 88.0,
+    "ml_probability": 0.91,
+    "detour_active": false
+  }
+  \end{lstlisting}
+\end{itemize}
+
+\section{WebSocket Real-Time Broadcast Schema}
+Every 500\,ms, the WebSocket server at \texttt{/ws/telemetry} emits a JSON frame structured as follows:
+
+\begin{lstlisting}[language=json,caption={Real-time WebSocket telemetry JSON frame.}]
+{
+  "timestamp": 1729004812.54,
+  "topology_id": "diamond",
+  "routing_mode": "ml_aware",
+  "detour_active": true,
+  "links": [
+    {
+      "src": "s1",
+      "dst": "s2",
+      "capacity_mbps": 10.0,
+      "tx_rate_mbps": 0.1,
+      "rx_rate_mbps": 0.1,
+      "utilization_pct": 1.0,
+      "is_bottleneck": true,
+      "is_congested": false,
+      "ml_probability": 0.05
+    },
+    {
+      "src": "s1",
+      "dst": "s3",
+      "capacity_mbps": 10.0,
+      "tx_rate_mbps": 3.8,
+      "rx_rate_mbps": 3.8,
+      "utilization_pct": 38.0,
+      "is_bottleneck": false,
+      "is_congested": false,
+      "ml_probability": 0.12
+    }
+  ],
+  "verification": {
+    "status": "PASS",
+    "message": "Telemetry verified <80% capacity threshold."
+  }
+}
+\end{lstlisting}

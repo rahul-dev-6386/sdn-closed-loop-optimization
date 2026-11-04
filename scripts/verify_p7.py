@@ -241,11 +241,13 @@ def main() -> int:
           "collection runs of one link stay separate (no cross-run windows)",
           f"{len(separate)} rows, expected {expected}")
 
-    # (f) Duplicate timestamps are rejected rather than silently mis-windowed.
+    # (f) Duplicate timestamps are dropped and counted rather than mis-windowed.
     dupes = synth_series(20)
     dupes[5]["timestamp"] = dupes[4]["timestamp"]
-    check_raises(lambda: builder.build(dupes), ValueError,
-                 "duplicate timestamps rejected", "duplicate timestamp")
+    builder.build(dupes)
+    check(builder.dropped_duplicates == 1,
+          "duplicate timestamps dropped and counted",
+          f"dropped={builder.dropped_duplicates}")
 
     report["leakage"] = {
         "backward_only": unchanged,

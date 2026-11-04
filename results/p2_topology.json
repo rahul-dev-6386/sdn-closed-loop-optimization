@@ -1,0 +1,183 @@
+{
+  "config": "/home/rahul/sdn_project/config.yaml",
+  "datapath": "kernel",
+  "bandwidth_tolerance": 0.1,
+  "rtt_tolerance_pct": 15.0,
+  "passed": 14,
+  "failed": 0,
+  "cleanup_ok": true,
+  "paths": [
+    {
+      "label": "path A [static_flows]",
+      "path": [
+        "h1",
+        "s1",
+        "s2",
+        "s4",
+        "h4"
+      ],
+      "inter_switch_links": [
+        "s1--s2",
+        "s2--s4"
+      ],
+      "isolate_method": "static_flows",
+      "rules": [
+        {
+          "switch": "s1",
+          "in_port": 3,
+          "out_port": 1,
+          "description": "h1->s2 via s1"
+        },
+        {
+          "switch": "s2",
+          "in_port": 1,
+          "out_port": 2,
+          "description": "s1->s4 via s2"
+        },
+        {
+          "switch": "s4",
+          "in_port": 1,
+          "out_port": 3,
+          "description": "s2->h4 via s4"
+        },
+        {
+          "switch": "s4",
+          "in_port": 3,
+          "out_port": 1,
+          "description": "h4->s2 via s4 (reverse)"
+        },
+        {
+          "switch": "s2",
+          "in_port": 2,
+          "out_port": 1,
+          "description": "s4->s1 via s2 (reverse)"
+        },
+        {
+          "switch": "s1",
+          "in_port": 1,
+          "out_port": 3,
+          "description": "s2->h1 via s1 (reverse)"
+        }
+      ],
+      "predicted_rtt_ms": 24.0,
+      "ping": {
+        "sent": 5,
+        "received": 5,
+        "loss_pct": 0.0,
+        "rtt_min_ms": 24.26,
+        "rtt_avg_ms": 24.424,
+        "rtt_max_ms": 24.62,
+        "mdev_ms": 0.153
+      },
+      "iperf": [
+        {
+          "direction": "forward",
+          "seconds": 10.002053,
+          "bits_per_second": 10902952.023949483,
+          "mbps": 10.902952023949483,
+          "retransmits": 7
+        },
+        {
+          "direction": "reverse",
+          "seconds": 10.025135,
+          "bits_per_second": 10564064.82306722,
+          "mbps": 10.56406482306722,
+          "retransmits": 9
+        }
+      ],
+      "flows_after": {
+        "s1": 2,
+        "s2": 2,
+        "s3": 0,
+        "s4": 2
+      },
+      "notes": []
+    },
+    {
+      "label": "path B [static_flows]",
+      "path": [
+        "h1",
+        "s1",
+        "s3",
+        "s4",
+        "h4"
+      ],
+      "inter_switch_links": [
+        "s1--s3",
+        "s3--s4"
+      ],
+      "isolate_method": "static_flows",
+      "rules": [
+        {
+          "switch": "s1",
+          "in_port": 3,
+          "out_port": 2,
+          "description": "h1->s3 via s1"
+        },
+        {
+          "switch": "s3",
+          "in_port": 1,
+          "out_port": 2,
+          "description": "s1->s4 via s3"
+        },
+        {
+          "switch": "s4",
+          "in_port": 2,
+          "out_port": 3,
+          "description": "s3->h4 via s4"
+        },
+        {
+          "switch": "s4",
+          "in_port": 3,
+          "out_port": 2,
+          "description": "h4->s3 via s4 (reverse)"
+        },
+        {
+          "switch": "s3",
+          "in_port": 2,
+          "out_port": 1,
+          "description": "s4->s1 via s3 (reverse)"
+        },
+        {
+          "switch": "s1",
+          "in_port": 2,
+          "out_port": 3,
+          "description": "s3->h1 via s1 (reverse)"
+        }
+      ],
+      "predicted_rtt_ms": 24.0,
+      "ping": {
+        "sent": 5,
+        "received": 5,
+        "loss_pct": 0.0,
+        "rtt_min_ms": 24.106,
+        "rtt_avg_ms": 24.479,
+        "rtt_max_ms": 24.621,
+        "mdev_ms": 0.19
+      },
+      "iperf": [
+        {
+          "direction": "forward",
+          "seconds": 10.001999,
+          "bits_per_second": 10588500.958658364,
+          "mbps": 10.588500958658363,
+          "retransmits": 9
+        },
+        {
+          "direction": "reverse",
+          "seconds": 10.025756,
+          "bits_per_second": 10877175.14768961,
+          "mbps": 10.877175147689611,
+          "retransmits": 6
+        }
+      ],
+      "flows_after": {
+        "s1": 2,
+        "s2": 0,
+        "s3": 2,
+        "s4": 2
+      },
+      "notes": []
+    }
+  ]
+}

@@ -1,0 +1,208 @@
+{
+  "passed": 27,
+  "failed": 0,
+  "report": {
+    "total_samples": 2400,
+    "valid_horizon_samples": 2160,
+    "positive_samples": 887,
+    "negative_samples": 1273,
+    "positive_class_ratio": 0.4106,
+    "negative_class_ratio": 0.5894,
+    "is_balanced": true,
+    "per_pattern": {
+      "ramp": {
+        "total_samples": 432,
+        "positive_samples": 100,
+        "negative_samples": 332,
+        "positive_ratio": 0.2315
+      },
+      "bursty_onoff": {
+        "total_samples": 432,
+        "positive_samples": 176,
+        "negative_samples": 256,
+        "positive_ratio": 0.4074
+      },
+      "poisson": {
+        "total_samples": 432,
+        "positive_samples": 184,
+        "negative_samples": 248,
+        "positive_ratio": 0.4259
+      },
+      "tcp_udp_mix": {
+        "total_samples": 432,
+        "positive_samples": 216,
+        "negative_samples": 216,
+        "positive_ratio": 0.5
+      },
+      "elephant_mice": {
+        "total_samples": 432,
+        "positive_samples": 211,
+        "negative_samples": 221,
+        "positive_ratio": 0.4884
+      }
+    },
+    "per_link_direction": {
+      "s1->s2:forward": {
+        "total_samples": 1080,
+        "positive_samples": 441,
+        "negative_samples": 639,
+        "positive_ratio": 0.4083
+      },
+      "s1->s3:forward": {
+        "total_samples": 1080,
+        "positive_samples": 446,
+        "negative_samples": 634,
+        "positive_ratio": 0.413
+      }
+    },
+    "per_run_summary": {
+      "fixture_bursty_onoff_s142": {
+        "pattern": "bursty_onoff",
+        "total_samples": 108,
+        "positive_samples": 44,
+        "negative_samples": 64,
+        "positive_ratio": 0.4074
+      },
+      "fixture_bursty_onoff_s143": {
+        "pattern": "bursty_onoff",
+        "total_samples": 108,
+        "positive_samples": 44,
+        "negative_samples": 64,
+        "positive_ratio": 0.4074
+      },
+      "fixture_bursty_onoff_s144": {
+        "pattern": "bursty_onoff",
+        "total_samples": 108,
+        "positive_samples": 44,
+        "negative_samples": 64,
+        "positive_ratio": 0.4074
+      },
+      "fixture_bursty_onoff_s145": {
+        "pattern": "bursty_onoff",
+        "total_samples": 108,
+        "positive_samples": 44,
+        "negative_samples": 64,
+        "positive_ratio": 0.4074
+      },
+      "fixture_elephant_mice_s442": {
+        "pattern": "elephant_mice",
+        "total_samples": 108,
+        "positive_samples": 52,
+        "negative_samples": 56,
+        "positive_ratio": 0.4815
+      },
+      "fixture_elephant_mice_s443": {
+        "pattern": "elephant_mice",
+        "total_samples": 108,
+        "positive_samples": 52,
+        "negative_samples": 56,
+        "positive_ratio": 0.4815
+      },
+      "fixture_elephant_mice_s444": {
+        "pattern": "elephant_mice",
+        "total_samples": 108,
+        "positive_samples": 54,
+        "negative_samples": 54,
+        "positive_ratio": 0.5
+      },
+      "fixture_elephant_mice_s445": {
+        "pattern": "elephant_mice",
+        "total_samples": 108,
+        "positive_samples": 53,
+        "negative_samples": 55,
+        "positive_ratio": 0.4907
+      },
+      "fixture_poisson_s242": {
+        "pattern": "poisson",
+        "total_samples": 108,
+        "positive_samples": 45,
+        "negative_samples": 63,
+        "positive_ratio": 0.4167
+      },
+      "fixture_poisson_s243": {
+        "pattern": "poisson",
+        "total_samples": 108,
+        "positive_samples": 46,
+        "negative_samples": 62,
+        "positive_ratio": 0.4259
+      },
+      "fixture_poisson_s244": {
+        "pattern": "poisson",
+        "total_samples": 108,
+        "positive_samples": 44,
+        "negative_samples": 64,
+        "positive_ratio": 0.4074
+      },
+      "fixture_poisson_s245": {
+        "pattern": "poisson",
+        "total_samples": 108,
+        "positive_samples": 49,
+        "negative_samples": 59,
+        "positive_ratio": 0.4537
+      },
+      "fixture_ramp_s42": {
+        "pattern": "ramp",
+        "total_samples": 108,
+        "positive_samples": 26,
+        "negative_samples": 82,
+        "positive_ratio": 0.2407
+      },
+      "fixture_ramp_s43": {
+        "pattern": "ramp",
+        "total_samples": 108,
+        "positive_samples": 25,
+        "negative_samples": 83,
+        "positive_ratio": 0.2315
+      },
+      "fixture_ramp_s44": {
+        "pattern": "ramp",
+        "total_samples": 108,
+        "positive_samples": 24,
+        "negative_samples": 84,
+        "positive_ratio": 0.2222
+      },
+      "fixture_ramp_s45": {
+        "pattern": "ramp",
+        "total_samples": 108,
+        "positive_samples": 25,
+        "negative_samples": 83,
+        "positive_ratio": 0.2315
+      },
+      "fixture_tcp_udp_mix_s342": {
+        "pattern": "tcp_udp_mix",
+        "total_samples": 108,
+        "positive_samples": 54,
+        "negative_samples": 54,
+        "positive_ratio": 0.5
+      },
+      "fixture_tcp_udp_mix_s343": {
+        "pattern": "tcp_udp_mix",
+        "total_samples": 108,
+        "positive_samples": 54,
+        "negative_samples": 54,
+        "positive_ratio": 0.5
+      },
+      "fixture_tcp_udp_mix_s344": {
+        "pattern": "tcp_udp_mix",
+        "total_samples": 108,
+        "positive_samples": 54,
+        "negative_samples": 54,
+        "positive_ratio": 0.5
+      },
+      "fixture_tcp_udp_mix_s345": {
+        "pattern": "tcp_udp_mix",
+        "total_samples": 108,
+        "positive_samples": 54,
+        "negative_samples": 54,
+        "positive_ratio": 0.5
+      }
+    },
+    "lead_time_stats": {
+      "count": 887,
+      "mean_s": 3.44,
+      "min_s": 2.0,
+      "max_s": 12.0
+    }
+  },
+  "timestamp": 1792089546.9709663
+}

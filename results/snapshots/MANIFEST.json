@@ -7,13 +7,13 @@
       "title": "Unit test suite",
       "status": "pass",
       "exit_code": 0,
-      "passed": 519,
+      "passed": 632,
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:40:55+00:00",
-      "seconds": 10.8,
-      "log": "results/snapshots/logs/unit-20261013T094055Z.log"
+      "ran_at": "2026-10-15T18:39:24+00:00",
+      "seconds": 10.6,
+      "log": "results/snapshots/logs/unit-20261015T183924Z.log"
     },
     "p6": {
       "key": "p6",
@@ -25,23 +25,23 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:40:44+00:00",
+      "ran_at": "2026-10-15T18:39:07+00:00",
       "seconds": 0.3,
-      "log": "results/snapshots/logs/p6-20261013T094044Z.log"
+      "log": "results/snapshots/logs/p6-20261015T183907Z.log"
     },
     "p7": {
       "key": "p7",
       "phase": "P7",
       "title": "ML training + evaluation",
-      "status": "fail",
-      "exit_code": 1,
-      "passed": 16,
-      "failed": 1,
+      "status": "pass",
+      "exit_code": 0,
+      "passed": 43,
+      "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:42+00:00",
-      "seconds": 0.2,
-      "log": "results/snapshots/logs/p7-20261013T093642Z.log"
+      "ran_at": "2026-10-15T18:39:08+00:00",
+      "seconds": 1.8,
+      "log": "results/snapshots/logs/p7-20261015T183908Z.log"
     },
     "p8": {
       "key": "p8",
@@ -53,9 +53,9 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:40:18+00:00",
+      "ran_at": "2026-10-15T18:39:09+00:00",
       "seconds": 0.3,
-      "log": "results/snapshots/logs/p8-20261013T094018Z.log"
+      "log": "results/snapshots/logs/p8-20261015T183909Z.log"
     },
     "p9": {
       "key": "p9",
@@ -67,9 +67,9 @@
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:40:18+00:00",
-      "seconds": 0.4,
-      "log": "results/snapshots/logs/p9-20261013T094018Z.log"
+      "ran_at": "2026-10-15T18:39:09+00:00",
+      "seconds": 0.3,
+      "log": "results/snapshots/logs/p9-20261015T183909Z.log"
     },
     "p10": {
       "key": "p10",
@@ -77,13 +77,13 @@
       "title": "Experiment harness + sweep integrity",
       "status": "pass",
       "exit_code": 0,
-      "passed": 16,
+      "passed": 23,
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:36:42+00:00",
+      "ran_at": "2026-10-15T18:39:09+00:00",
       "seconds": 0.1,
-      "log": "results/snapshots/logs/p10-20261013T093642Z.log"
+      "log": "results/snapshots/logs/p10-20261015T183909Z.log"
     },
     "p11": {
       "key": "p11",
@@ -91,15 +91,29 @@
       "title": "Analysis restraint and report integrity",
       "status": "pass",
       "exit_code": 0,
-      "passed": 32,
+      "passed": 34,
       "failed": 0,
       "skipped": null,
       "needs_root": false,
-      "ran_at": "2026-10-13T09:40:19+00:00",
+      "ran_at": "2026-10-15T18:39:10+00:00",
       "seconds": 0.7,
-      "log": "results/snapshots/logs/p11-20261013T094019Z.log"
+      "log": "results/snapshots/logs/p11-20261015T183910Z.log"
+    },
+    "p12": {
+      "key": "p12",
+      "phase": "P12",
+      "title": "FastAPI auth, endpoints, websocket, dashboard",
+      "status": "pass",
+      "exit_code": 0,
+      "passed": 27,
+      "failed": 0,
+      "skipped": null,
+      "needs_root": false,
+      "ran_at": "2026-10-15T18:39:14+00:00",
+      "seconds": 3.9,
+      "log": "results/snapshots/logs/p12-20261015T183914Z.log"
     }
   },
-  "commit": "061ab09",
-  "updated_at": "2026-10-13T09:40:55+00:00"
+  "commit": "087fc17",
+  "updated_at": "2026-10-15T18:39:24+00:00"
 }

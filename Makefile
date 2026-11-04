@@ -80,10 +80,10 @@ mn-clean: ## Tear down any leftover mininet state (needs root)
 # P12 -- API + dashboard
 # -----------------------------------------------------------------------------
 api: ## P12 -- run the FastAPI (add sudo to read OpenFlow tables)
-	$(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
+	PYTHONPATH=".:future:$${PYTHONPATH:-}" $(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
 
 api-sudo: ## P12 -- run the API with OpenFlow read access
-	sudo $(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
+	sudo env "PATH=$(CURDIR)/$(VENV)/bin:$$PATH" PYTHONPATH="$(CURDIR):$(CURDIR)/future:$${PYTHONPATH:-}" $(PY) -m uvicorn future.api.main:app --host 127.0.0.1 --port 8000
 
 dashboard: ## P12 -- run the React dev server against the API
 	cd future/dashboard/react-app && npm run dev
@@ -175,6 +175,19 @@ check-smoke: ## P6 quality check: validate smoke dataset integrity
 
 verify-p6: ## P6 acceptance: traffic patterns, future labeling, balanced dataset
 	$(PY) scripts/verify_p6.py --out results/p6_dataset.json
+
+synthetic-data: ## Generate synthetic telemetry dataset (no root needed)
+	$(PY) scripts/generate_synthetic_dataset.py --output data/telemetry_synthetic.csv --seeds 3
+
+augment-data:   ## Generate synthetic telemetry and merge with live dataset
+	$(PY) scripts/generate_synthetic_dataset.py --output data/telemetry_synthetic.csv --augment --seeds 3
+
+train-synthetic: ## Train predictor on synthetic dataset
+	$(PY) -m ml.train --csv data/telemetry_synthetic.csv
+
+train-augmented: ## Train predictor on combined real + synthetic dataset
+	$(PY) -m ml.train --csv data/telemetry_augmented.csv
+
 train:       ## P7 -- train + evaluate the congestion predictor
 	$(PY) -m ml.train
 
@@ -199,12 +212,18 @@ verify-p11: ## P11 acceptance: analysis refuses to over-claim, report renders
 	$(PY) scripts/verify_p11.py --out results/p11_acceptance.json
 figures:     ## P11 -- tables, figures and RESULTS.md from results/experiments.csv
 	$(PY) scripts/make_report.py
-	@echo "P11 (analysis): not implemented yet -- say 'start P11'"
+
 pipeline:    ## Run the remaining P7->P13 pipeline in dependency order (root)
 	bash scripts/run_pipeline.sh
 
 pdf:         ## Export PROGRESS_REPORT.md to docs/PROGRESS_REPORT.pdf
 	$(PY) scripts/export_pdf.py PROGRESS_REPORT.md -o docs/PROGRESS_REPORT.pdf
 
-demo:        ## P13 -- end-to-end demonstration
-	@echo "P13 (demo): not implemented yet -- say 'start P13'"
+demo:        ## P13 -- end-to-end demonstration (needs root)
+	$(SUDO_ENV) $(PY) scripts/demo.py --mode ml_aware
+
+demo-control: ## P13 -- demonstration control run (reactive_threshold, needs root)
+	$(SUDO_ENV) $(PY) scripts/demo.py --mode reactive_threshold
+
+test-e2e:    ## End-to-end integration test for frontend and backend
+	$(PY) scripts/test_frontend_e2e.py

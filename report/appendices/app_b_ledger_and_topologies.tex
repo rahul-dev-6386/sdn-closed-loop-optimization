@@ -1,0 +1,158 @@
+\chapter[Empirical Ledger, Topologies, and Runbook]{Empirical Data Ledger, Topology Catalog, and Reproduction Runbook}
+\label{app:ledger_and_topologies}
+
+\section{Comprehensive 46-Run Empirical Data Ledger}
+This section provides the empirical performance records of all 46 Mininet 2.3.0 experiment runs recorded in \texttt{results/experiments.csv}. Each run represents a 90-second execution against live Linux TC netem kernel queues and OpenFlow 1.3 software switches.
+
+Table~\ref{tab:scenario_aggregate} provides the per-scenario statistical summary ($\mu \pm \sigma$) across each routing mode.
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Empirical per-mode performance synthesis across all 46 test runs.}
+  \label{tab:scenario_aggregate}
+  \begin{tabularx}{\textwidth}{l X c r r r r}
+    \toprule
+    \textbf{Mode} & \textbf{Scenario} & \textbf{Runs} & \textbf{Mean Latency} & \textbf{Throughput} & \textbf{Loss Rate} & \textbf{Congestion} \\
+    & & & \textbf{(ms)} & \textbf{(Mbps)} & \textbf{(\%)} & \textbf{Duration (s)} \\
+    \midrule
+    \texttt{ecmp} & baseline & 4 & $11.91 \pm 0.81$ & $0.65 \pm 0.03$ & $0.01 \pm 0.00$ & $0.00 \pm 0.00$ \\
+    \texttt{ecmp} & hot\_sink & 4 & $12.93 \pm 0.61$ & $0.00 \pm 0.00$ & $0.00 \pm 0.00$ & $0.00 \pm 0.00$ \\
+    \texttt{ecmp} & ramp\_bursty & 4 & $14.19 \pm 0.92$ & $1.72 \pm 0.00$ & $0.81 \pm 0.37$ & $0.00 \pm 0.00$ \\
+    \midrule
+    \texttt{ml\_aware} & baseline & 4 & $12.66 \pm 0.92$ & $0.63 \pm 0.02$ & $0.01 \pm 0.00$ & $0.00 \pm 0.00$ \\
+    \texttt{ml\_aware} & hot\_sink & 3 & $13.03 \pm 1.04$ & $0.00 \pm 0.00$ & $0.00 \pm 0.00$ & $0.00 \pm 0.00$ \\
+    \texttt{ml\_aware} & ramp\_bursty & 4 & $14.24 \pm 0.89$ & $\mathbf{1.73 \pm 0.00}$ & $1.11 \pm 0.32$ & $0.00 \pm 0.00$ \\
+    \midrule
+    \texttt{reactive} & baseline & 4 & $12.65 \pm 1.06$ & $0.61 \pm 0.03$ & $0.01 \pm 0.01$ & $0.00 \pm 0.00$ \\
+    \texttt{reactive} & hot\_sink & 3 & $12.61 \pm 0.98$ & $0.00 \pm 0.00$ & $0.05 \pm 0.08$ & $0.00 \pm 0.00$ \\
+    \texttt{reactive} & ramp\_bursty & 4 & $13.98 \pm 0.80$ & $1.72 \pm 0.00$ & $0.86 \pm 0.13$ & $0.00 \pm 0.00$ \\
+    \midrule
+    \texttt{static} & baseline & 4 & $12.67 \pm 0.44$ & $0.66 \pm 0.02$ & $0.01 \pm 0.00$ & $0.00 \pm 0.00$ \\
+    \texttt{static} & hot\_sink & 4 & $12.78 \pm 0.26$ & $0.00 \pm 0.00$ & $0.12 \pm 0.20$ & $0.46 \pm 0.80$ \\
+    \texttt{static} & ramp\_bursty & 4 & $13.55 \pm 1.51$ & $1.72 \pm 0.00$ & $0.94 \pm 0.18$ & $0.00 \pm 0.00$ \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Table~\ref{tab:full_46_runs} catalogs the per-run empirical measurements across repetitions.
+
+\begingroup
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{longtable}{llcrrrrr}
+\caption{Empirical data ledger across Mininet experiment repetitions.} \label{tab:full_46_runs} \\
+\toprule
+\textbf{Mode} & \textbf{Scenario} & \textbf{Rep} & \textbf{Latency} & \textbf{p95 Lat} & \textbf{Tput} & \textbf{Loss} & \textbf{Congestion} \\
+ & & & \textbf{(ms)} & \textbf{(ms)} & \textbf{(Mbps)} & \textbf{(\%)} & \textbf{(s)} \\
+\midrule
+\endfirsthead
+\multicolumn{8}{c}{\tablename\ \thetable\ -- Continued from previous page} \\
+\toprule
+\textbf{Mode} & \textbf{Scenario} & \textbf{Rep} & \textbf{Latency} & \textbf{p95 Lat} & \textbf{Tput} & \textbf{Loss} & \textbf{Congestion} \\
+ & & & \textbf{(ms)} & \textbf{(ms)} & \textbf{(Mbps)} & \textbf{(\%)} & \textbf{(s)} \\
+\midrule
+\endhead
+\midrule
+\multicolumn{8}{r}{Continued on next page\dots} \\
+\bottomrule
+\endfoot
+\bottomrule
+\endlastfoot
+
+\texttt{static\_shortest} & baseline & 0 & 12.54 & 14.96 & 0.69 & 0.02 & 0.00 \\
+\texttt{ecmp} & baseline & 0 & 10.58 & 13.02 & 0.69 & 0.01 & 0.00 \\
+\texttt{reactive\_threshold} & baseline & 0 & 10.97 & 13.00 & 0.63 & 0.02 & 0.00 \\
+\texttt{ml\_aware} & baseline & 0 & 11.15 & 13.47 & 0.64 & 0.02 & 0.00 \\
+\texttt{static\_shortest} & ramp\_bursty & 0 & 11.40 & 13.71 & 1.72 & 1.04 & 0.00 \\
+\texttt{ecmp} & ramp\_bursty & 0 & 14.26 & 16.22 & 1.72 & 1.02 & 0.00 \\
+\texttt{reactive\_threshold} & ramp\_bursty & 0 & 14.66 & 15.63 & 1.72 & 0.87 & 0.00 \\
+\texttt{ml\_aware} & ramp\_bursty & 0 & 13.37 & 15.36 & 1.72 & 1.47 & 0.00 \\
+\texttt{static\_shortest} & hot\_sink & 0 & 12.90 & 15.46 & 0.00 & 0.00 & 0.00 \\
+\texttt{ecmp} & hot\_sink & 0 & 13.32 & 16.68 & 0.00 & 0.00 & 0.00 \\
+\texttt{reactive\_threshold} & hot\_sink & 0 & 11.78 & 14.90 & 0.00 & 0.00 & 0.00 \\
+\texttt{ml\_aware} & hot\_sink & 0 & 13.67 & 16.23 & 0.00 & 0.00 & 0.00 \\
+\midrule
+\texttt{static\_shortest} & baseline & 1 & 12.30 & 14.50 & 0.62 & 0.02 & 0.00 \\
+\texttt{ecmp} & baseline & 1 & 12.37 & 14.59 & 0.66 & 0.02 & 0.00 \\
+\texttt{reactive\_threshold} & baseline & 1 & 13.90 & 16.14 & 0.57 & 0.00 & 0.00 \\
+\texttt{ml\_aware} & baseline & 1 & 13.27 & 15.75 & 0.65 & 0.01 & 0.00 \\
+\texttt{static\_shortest} & ramp\_bursty & 1 & 14.60 & 15.81 & 1.72 & 1.06 & 0.00 \\
+\texttt{ecmp} & ramp\_bursty & 1 & 12.68 & 13.76 & 1.72 & 1.31 & 0.00 \\
+\texttt{reactive\_threshold} & ramp\_bursty & 1 & 14.26 & 16.81 & 1.72 & 0.66 & 0.00 \\
+\texttt{ml\_aware} & ramp\_bursty & 1 & 14.57 & 15.80 & 1.73 & 1.28 & 0.00 \\
+\texttt{static\_shortest} & hot\_sink & 1 & 12.45 & 15.67 & 0.00 & 0.00 & 0.00 \\
+\texttt{ecmp} & hot\_sink & 1 & 12.44 & 14.92 & 0.00 & 0.00 & 0.00 \\
+\texttt{reactive\_threshold} & hot\_sink & 1 & 12.08 & 14.62 & 0.00 & 0.00 & 0.00 \\
+\texttt{ml\_aware} & hot\_sink & 1 & 11.57 & 14.13 & 0.00 & 0.00 & 0.00 \\
+\midrule
+\texttt{static\_shortest} & baseline & 2 & 12.44 & 14.82 & 0.66 & 0.01 & 0.00 \\
+\texttt{ecmp} & baseline & 2 & 11.96 & 14.86 & 0.61 & 0.02 & 0.00 \\
+\texttt{reactive\_threshold} & baseline & 2 & 12.78 & 15.02 & 0.59 & 0.01 & 0.00 \\
+\texttt{ml\_aware} & baseline & 2 & 13.50 & 15.87 & 0.63 & 0.01 & 0.00 \\
+\texttt{static\_shortest} & ramp\_bursty & 2 & 15.28 & 16.81 & 1.72 & 0.62 & 0.00 \\
+\texttt{ecmp} & ramp\_bursty & 2 & 15.11 & 17.84 & 1.72 & 0.38 & 0.00 \\
+\texttt{reactive\_threshold} & ramp\_bursty & 2 & 14.38 & 15.36 & 1.72 & 1.01 & 0.00 \\
+\texttt{ml\_aware} & ramp\_bursty & 2 & 15.55 & 17.30 & 1.73 & 0.61 & 0.00 \\
+\texttt{static\_shortest} & hot\_sink & 2 & 12.66 & 15.73 & 0.00 & 0.00 & 0.00 \\
+\texttt{ecmp} & hot\_sink & 2 & 13.72 & 16.14 & 0.00 & 0.00 & 0.00 \\
+\texttt{reactive\_threshold} & hot\_sink & 2 & 13.99 & 16.42 & 0.00 & 0.16 & 0.00 \\
+\texttt{ml\_aware} & hot\_sink & 2 & 13.85 & 18.60 & 0.00 & 0.00 & 0.00 \\
+\midrule
+\texttt{static\_shortest} & baseline & 3 & 13.42 & 17.76 & 0.66 & 0.01 & 0.00 \\
+\texttt{ecmp} & baseline & 3 & 12.71 & 15.56 & 0.66 & 0.01 & 0.00 \\
+\texttt{reactive\_threshold} & baseline & 3 & 12.96 & 15.79 & 0.63 & 0.01 & 0.00 \\
+\texttt{ml\_aware} & baseline & 3 & 12.73 & 15.38 & 0.60 & 0.01 & 0.00 \\
+\texttt{static\_shortest} & ramp\_bursty & 3 & 12.91 & 13.69 & 1.72 & 1.05 & 0.00 \\
+\texttt{ecmp} & ramp\_bursty & 3 & 14.70 & 15.46 & 1.72 & 0.53 & 0.00 \\
+\texttt{reactive\_threshold} & ramp\_bursty & 3 & 12.62 & 14.58 & 1.72 & 0.88 & 0.00 \\
+\texttt{ml\_aware} & ramp\_bursty & 3 & 13.48 & 15.03 & 1.73 & 1.06 & 0.00 \\
+\texttt{static\_shortest} & hot\_sink & 3 & 13.13 & 15.34 & 0.00 & 0.47 & 1.85 \\
+\texttt{ecmp} & hot\_sink & 3 & 12.23 & 15.42 & 0.00 & 0.00 & 0.00 \\
+\bottomrule
+\end{longtable}
+\endgroup
+
+\section[Network Topology Catalog]{Full Network Topology Catalog}
+This section details the topology configurations defined in \texttt{future/api/topologies\_catalog.py}:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Classic Diamond (\texttt{diamond})}: 4 switches ($s_1\dots s_4$), 2 hosts ($h_1, h_2$). Primary link: $s_1 \leftrightarrow s_2$ (10\,Mbps, 5\,ms). Detour bypass: $s_1 \to s_3 \to s_4 \to h_2$. Canonical topology used in the 46-run Mininet empirical benchmark.
+  \item \textbf{Internet2 Abilene WAN (\texttt{abilene})}: 9 core PoP switches (\texttt{SEA}, \texttt{SFO}, \texttt{LAX}, \texttt{DEN}, \texttt{ORD}, \texttt{DFW}, \texttt{ATL}, \texttt{WDC}, \texttt{NYC}) and 10 bidirectional links. Primary path: $\text{SFO} \to \text{DEN} \to \text{ORD} \to \text{NYC}$ with bottleneck link $\text{DEN--ORD}$ (10\,Mbps, 15\,ms delay). Detour bypass corridor: 5 links connecting 6 core PoPs ($\text{SFO} \to \text{LAX} \to \text{DFW} \to \text{ATL} \to \text{WDC} \to \text{NYC}$).
+  \item \textbf{Datacenter Fat-Tree (\texttt{fat\_tree})}: 8 switches, 4 hosts, 12 links. Dual core switches ($c_1, c_2$, 40\,Mbps) and aggregation pods ($a_1, a_2$, 20\,Mbps).
+  \item \textbf{Spine-Leaf (\texttt{spine\_leaf})}: 6 switches, 2 hosts, 10 links. Full bisection East-West connectivity with 25\,Mbps links.
+  \item \textbf{Linear, Ring, Grid, Clos, Mesh, Star}: Cascading chains, cyclic rings with loop guards, $3 \times 3$ mesh grids, 3-stage Clos switches, and enterprise hub-and-spoke topologies.
+\end{itemize}
+
+\section[Reproduction Runbook]{System Reproduction Guide and Runbook}
+The full software stack can be reproduced and tested using the following procedures:
+
+\subsection{Environment Setup}
+\begin{lstlisting}[language=bash]
+# 1. Activate Python virtual environment and install dependencies
+cd /opt/sdn-controller  # or path to project repository
+source .venv/bin/activate
+pip install -r requirements.txt
+npm --prefix future/dashboard/react-app install
+\end{lstlisting}
+
+\subsection{Running Automated Test Suites}
+\begin{lstlisting}[language=bash]
+# Unit and API hermetic test suite (17 test modules, 632 test assertions)
+PYTHONPATH=".:future" pytest tests/ -v
+
+# Frontend TypeScript check and Vite production build
+npm --prefix future/dashboard/react-app run build
+\end{lstlisting}
+
+\subsection{Launching the Interactive Live System}
+Run three terminal processes in parallel:
+\begin{enumerate}[noitemsep]
+  \item \textbf{Ryu Controller}:\\
+  \texttt{PYTHONPATH=".:future" ryu-manager --ofp-tcp-listen-port 6653 controller.sdn\_controller}
+  \item \textbf{FastAPI Backend}:\\
+  \texttt{PYTHONPATH=".:future" python -m uvicorn future.api.main:app --port 8000}
+  \item \textbf{React Development Server}:\\
+  \texttt{npm --prefix future/dashboard/react-app run dev}
+\end{enumerate}
+Access the live interface at \url{http://localhost:5173}. In the Agentic AI modal, execute \texttt{[Create Congestion (14M)]} and \texttt{[Fix Congestion]} to verify closed-loop Make-Before-Break rerouting.

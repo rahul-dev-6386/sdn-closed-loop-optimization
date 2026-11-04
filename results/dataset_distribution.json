@@ -1,0 +1,64 @@
+{
+  "total_samples": 11,
+  "valid_horizon_samples": 5,
+  "positive_samples": 0,
+  "negative_samples": 5,
+  "positive_class_ratio": 0.0,
+  "negative_class_ratio": 1.0,
+  "is_balanced": false,
+  "per_pattern": {
+    "ramp": {
+      "total_samples": 0,
+      "positive_samples": 0,
+      "negative_samples": 0,
+      "positive_ratio": 0.0
+    },
+    "bursty_onoff": {
+      "total_samples": 0,
+      "positive_samples": 0,
+      "negative_samples": 0,
+      "positive_ratio": 0.0
+    },
+    "poisson": {
+      "total_samples": 0,
+      "positive_samples": 0,
+      "negative_samples": 0,
+      "positive_ratio": 0.0
+    },
+    "tcp_udp_mix": {
+      "total_samples": 0,
+      "positive_samples": 0,
+      "negative_samples": 0,
+      "positive_ratio": 0.0
+    },
+    "elephant_mice": {
+      "total_samples": 0,
+      "positive_samples": 0,
+      "negative_samples": 0,
+      "positive_ratio": 0.0
+    }
+  },
+  "per_link_direction": {
+    "s1->s2:forward": {
+      "total_samples": 5,
+      "positive_samples": 0,
+      "negative_samples": 5,
+      "positive_ratio": 0.0
+    }
+  },
+  "per_run_summary": {
+    "r": {
+      "pattern": null,
+      "total_samples": 5,
+      "positive_samples": 0,
+      "negative_samples": 5,
+      "positive_ratio": 0.0
+    }
+  },
+  "lead_time_stats": {
+    "count": 0,
+    "mean_s": 0.0,
+    "min_s": 0.0,
+    "max_s": 0.0
+  }
+}

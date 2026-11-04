@@ -336,7 +336,7 @@ class ExperimentRunner:
         }
 
         try:
-            ryu_proc = self._start_controller(spec.mode)
+            ryu_proc = self._start_controller(spec)
             topo, net = self._start_fabric()
 
             from traffic.generate import run_live_pattern_on_hosts
@@ -365,13 +365,13 @@ class ExperimentRunner:
         finally:
             self._teardown(topo, net, ryu_proc)
 
-    def _start_controller(self, mode: str) -> subprocess.Popen:
+    def _start_controller(self, spec: RunSpec) -> subprocess.Popen:
         """Start Ryu with the requested routing mode."""
         from ml.collect_dataset import wait_for_port
 
         env = os.environ.copy()
         env["PYTHONPATH"] = "."
-        env[LoopConfig.MODE_ENV_VAR] = mode
+        env[LoopConfig.MODE_ENV_VAR] = spec.mode
         # Output goes to a file, not an undrained pipe: a full pipe blocks the
         # controller and silently halts its event loop. See common.proc.
         log_sink = controller_log(f"experiment_{spec.key}")

@@ -1,16 +1,28 @@
 /**
- * API client with automatic access-token refresh.
- *
- * Tokens live in localStorage. That is acceptable *only* because this is a
- * localhost, single-operator tool; the refresh token is long-lived and
- * localStorage is XSS-readable. A deployment on an untrusted origin should
- * move the refresh token into an httpOnly cookie. See README.
+ * API client with automatic access-token refresh, server clock offset sync,
+ * resilient WebSocket reconnection with exponential backoff, and edge schema validation.
  */
+import { safeValidate, LiveFrameSchema, TopologyResponseSchema } from './utils/schemas'
 
-const BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
+const BASE =
+  import.meta.env.VITE_API_BASE ??
+  (typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:8000`
+    : 'http://127.0.0.1:8000')
 
 const ACCESS_KEY = 'sdn.access'
 const REFRESH_KEY = 'sdn.refresh'
+
+// Server clock offset in milliseconds (server_time - client_time)
+let serverClockOffsetMs = 0
+
+export function getServerClockOffsetMs(): number {
+  return serverClockOffsetMs
+}
+
+export function getServerNow(): number {
+  return Date.now() + serverClockOffsetMs
+}
 
 export interface TokenPair {
   access_token: string
@@ -20,22 +32,32 @@ export interface TokenPair {
 }
 
 export interface Topology {
+  id?: string
   name: string
   switches: string[]
-  hosts: { name: string; ip: string; switch: string }[]
+  hosts: { name: string; ip: string; switch: string; x?: number; y?: number }[]
   links: { a: string; b: string; bw_mbps?: number | null; delay_ms?: number | null; host_link?: boolean }[]
   link_bw_mbps?: number | null
   link_delay_ms?: number | null
   datapath_type?: string | null
   ports_available: boolean
   port_map: Record<string, Record<string, number>>
+  node_coordinates?: Record<string, { x: number; y: number; layer?: number }>
+  default_path?: string[]
+  alternate_path?: string[]
+  bottleneck_link?: string
 }
 
 export interface SdnEvent {
+  id?: string
   kind: string
   wall_ts?: number
   wall_iso?: string
   ts?: number
+  summary?: string
+  elapsed_s?: number
+  link?: string
+  rate_mbps?: number
   [key: string]: unknown
 }
 
@@ -44,14 +66,55 @@ export interface Status {
   mongo_enabled: boolean
   predictions_available: boolean
   phases: Record<string, boolean>
+  fabric_running?: boolean
+}
+
+export interface LiveTelemetryRow {
+  timestamp: string
+  src_switch: string
+  dst_switch: string
+  direction: string
+  utilization: string
+  is_congested: string
+  predicted_congested?: string
+  latency_ms?: string
+  tx_rate_mbps?: string
+}
+
+export interface FabricStatus {
+  fabric_running: boolean
+  routing_mode: string
+  spike_active: boolean
+  spike_rate_mbps: number
+  spike_elapsed_s: number
+  spike_duration_s: number
+}
+
+export interface LinkUtilisationRecord {
+  key: string
+  src: string
+  dst: string
+  capacity_mbps: number
+  used_mbps: number
+  util_pct: number
+  is_stale: boolean
+  source: string
 }
 
 export interface LiveFrame {
   type: string
   at: number
-  topology: Topology
-  controller: Status['controller']
+  topology?: Topology
+  controller?: Status['controller']
   events: SdnEvent[]
+  telemetry?: LiveTelemetryRow[]
+  utilisation?: {
+    available: boolean
+    topo_id: string
+    timestamp: number
+    links: Record<string, LinkUtilisationRecord>
+  }
+  fabric?: FabricStatus
 }
 
 /** Raised when the server rejects a request even after a refresh attempt. */
@@ -76,7 +139,6 @@ export const tokens = {
   },
 }
 
-/** Called when refresh fails and the session must end. */
 let onSessionLost: (() => void) | null = null
 export function setSessionLostHandler(fn: () => void) {
   onSessionLost = fn
@@ -93,11 +155,6 @@ async function parse(response: Response) {
   }
 }
 
-/**
- * Exchange the refresh token for a new access token.
- *
- * @returns true when a new pair was stored.
- */
 export async function refreshSession(): Promise<boolean> {
   const rt = tokens.refresh()
   if (!rt) return false
@@ -123,37 +180,48 @@ export async function refreshSession(): Promise<boolean> {
 interface RequestOptions {
   method?: string
   body?: unknown
-  /** Set false to avoid a refresh+retry cycle (used by auth calls). */
   retryOn401?: boolean
+  signal?: AbortSignal
 }
 
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, retryOn401 = true } = options
-  const headers: Record<string, string> = {}
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { method = 'GET', body, retryOn401 = true, signal } = options
+  const headers: Record<string, string> = { Accept: 'application/json' }
   const access = tokens.access()
   if (access) headers.Authorization = `Bearer ${access}`
+  let payload: BodyInit | undefined
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    payload = JSON.stringify(body)
+  }
 
-  const response = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  const response = await fetch(`${BASE}${path}`, { method, headers, body: payload, signal })
 
-  if (response.status === 401 && retryOn401 && tokens.refresh()) {
-    if (await refreshSession()) {
-      return request<T>(path, { ...options, retryOn401: false })
+  // Synchronize server clock offset from response Date header
+  const serverDateStr = response.headers.get('date')
+  if (serverDateStr) {
+    const serverTimeMs = new Date(serverDateStr).getTime()
+    if (!isNaN(serverTimeMs)) {
+      serverClockOffsetMs = serverTimeMs - Date.now()
     }
   }
 
+  if (response.status === 401 && retryOn401) {
+    const refreshed = await refreshSession()
+    if (refreshed) {
+      return request<T>(path, { ...options, retryOn401: false })
+    }
+    tokens.clear()
+    onSessionLost?.()
+    throw new ApiError('Session expired. Sign in again.', 401)
+  }
+
   if (!response.ok) {
-    const payload = await parse(response)
+    const data = await parse(response)
     const message =
-      (payload && typeof payload === 'object' && 'detail' in payload
-        ? String((payload as { detail: unknown }).detail)
-        : typeof payload === 'string'
-          ? payload
-          : response.statusText) || `HTTP ${response.status}`
+      typeof data === 'object' && data && 'detail' in data
+        ? String((data as { detail: unknown }).detail)
+        : `Request failed with status ${response.status}`
     throw new ApiError(message, response.status)
   }
   return (await parse(response)) as T
@@ -172,32 +240,292 @@ export const api = {
       body: { username, password },
       retryOn401: false,
     }),
-  logout: () => request<{ revoked: boolean }>('/api/auth/logout', {
-    method: 'POST',
-    body: { refresh_token: tokens.refresh() },
-    retryOn401: false,
-  }),
-  topology: () => request<Topology>('/api/topology'),
-  flows: () => request<Record<string, unknown>>('/api/flows'),
-  status: () => request<Status>('/api/status'),
-  events: (limit = 100) => request<SdnEvent[]>(`/api/events?limit=${limit}`),
-  predictions: () =>
-    request<{ available: boolean; reason?: string; links: unknown[] }>('/api/predictions'),
+  logout: () =>
+    request<{ revoked: boolean }>('/api/auth/logout', {
+      method: 'POST',
+      body: { refresh_token: tokens.refresh() },
+      retryOn401: false,
+    }),
+  topology: async (id?: string, signal?: AbortSignal): Promise<Topology> => {
+    const raw = await request<unknown>(`/api/topology${id ? `?id=${encodeURIComponent(id)}` : ''}`, { signal })
+    const validated = safeValidate(TopologyResponseSchema, raw, 'Topology')
+    if (validated.success) {
+      return validated.data as unknown as Topology
+    }
+    return raw as Topology
+  },
+  flows: (topo_id?: string, signal?: AbortSignal) =>
+    request<Record<string, unknown>>(
+      `/api/flows${topo_id ? `?topo_id=${encodeURIComponent(topo_id)}` : ''}`,
+      { signal },
+    ),
+  status: (signal?: AbortSignal) => request<Status>('/api/status', { signal }),
+  events: (limit = 100, signal?: AbortSignal) => request<SdnEvent[]>(`/api/events?limit=${limit}`, { signal }),
+  predictions: (signal?: AbortSignal) =>
+    request<{
+      available: boolean
+      reason?: string
+      links: { link: string; probability?: number; congested?: boolean; reason?: string }[]
+    }>('/api/predictions', { signal }),
+  fabricStatus: (signal?: AbortSignal) => request<FabricStatus>('/api/fabric/status', { signal }),
+  startFabric: (mode = 'ml_aware') =>
+    request<{ status: string }>('/api/fabric/start', { method: 'POST', body: { mode } }),
+  stopFabric: () => request<{ status: string }>('/api/fabric/stop', { method: 'POST' }),
+  startSpike: (rate_mbps = 14.0, duration_s = 45.0) =>
+    request<{ status: string }>('/api/traffic/spike', {
+      method: 'POST',
+      body: { rate_mbps, duration_s },
+    }),
+  stopSpike: () => request<{ status: string }>('/api/traffic/stop', { method: 'POST' }),
+  spikeStart: (src = 'h1', dst = 'h4', mbps = 14.0, proto = 'udp') =>
+    request<{ status: string }>('/api/spike', {
+      method: 'POST',
+      body: { src, dst, mbps, proto },
+    }),
+  spikeStop: () =>
+    request<{ status: string }>('/api/spike', {
+      method: 'DELETE',
+    }),
+  utilisation: (topo_id?: string, signal?: AbortSignal) =>
+    request<{
+      available: boolean
+      topo_id: string
+      timestamp: number
+      links: Record<string, LinkUtilisationRecord>
+    }>(`/api/telemetry/utilisation${topo_id ? `?topo_id=${encodeURIComponent(topo_id)}` : ''}`, { signal }),
+  emitDecisionEvent: (payload: {
+    predicted_link: string
+    p: number
+    action: string
+    flow_mods?: string[]
+    path_old?: string[]
+    path_new?: string[]
+  }) =>
+    request<{ status: string; event: SdnEvent }>('/api/controller/decision-event', {
+      method: 'POST',
+      body: payload,
+    }),
+  emitVerifyEvent: (payload: {
+    link: string
+    before_pct: number
+    after_pct: number
+    window_s: number
+    result: string
+  }) =>
+    request<{ status: string; event: SdnEvent }>('/api/controller/verify-event', {
+      method: 'POST',
+      body: payload,
+    }),
+  setControllerMode: (mode: string) =>
+    request<{ status: string }>('/api/controller/mode', {
+      method: 'POST',
+      body: { mode },
+    }),
+  analyticsRealData: (signal?: AbortSignal) =>
+    request<AnalyticsRealData>('/api/analytics/real-data', { signal }),
+  agentConfig: () => request<AgentConfigData>('/api/agent/config'),
+  saveAgentConfig: (api_key: string, model: string) =>
+    request<AgentConfigData>('/api/agent/config', {
+      method: 'POST',
+      body: { api_key, model },
+    }),
+  agentState: () => request<AgentStateData>('/api/agent/state'),
+  agentChat: (message: string, topology_id?: string) =>
+    request<AgentStateData>('/api/agent/chat', {
+      method: 'POST',
+      body: { message, topology_id },
+    }),
+  agentRun: (topology_id?: string) =>
+    request<AgentStateData>('/api/agent/run', {
+      method: 'POST',
+      body: { topology_id },
+    }),
+  agentCreateCongestion: (topology_id?: string, rate_mbps: number = 14.0) =>
+    request<AgentStateData>('/api/agent/create-congestion', {
+      method: 'POST',
+      body: { topology_id, rate_mbps },
+    }),
 }
 
-export function liveSocket(onFrame: (f: LiveFrame) => void, onClose: () => void): WebSocket {
-  const access = tokens.access()
-  const url = `${BASE.replace(/^http/, 'ws')}/ws/live?token=${encodeURIComponent(access ?? '')}`
-  const socket = new WebSocket(url)
-  socket.onmessage = (event) => {
+export interface AgentStepLog {
+  node: string
+  title: string
+  description: string
+  timestamp: string
+  status: 'running' | 'success' | 'warning' | 'error'
+  meta?: Record<string, any>
+}
+
+export interface AgentMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  time?: string
+}
+
+export interface AgentStateData {
+  messages: AgentMessage[]
+  task: string
+  topology_id: string
+  network_state: Record<string, any>
+  predictions: Record<string, any>
+  congestion_detected: boolean
+  bottleneck_link: string
+  analysis: string
+  plan: string
+  action_taken: string
+  verification: Record<string, any>
+  iteration: number
+  status: string
+  steps_log: AgentStepLog[]
+  error?: string | null
+}
+
+export interface AgentConfigData {
+  has_api_key: boolean
+  masked_key: string
+  model: string
+  available_models: Array<{
+    id: string
+    name: string
+    context: number
+  }>
+  congestion_threshold_pct: number
+}
+
+
+export interface AnalyticsRealData {
+  status: string
+  provenance: {
+    experiments_file: string
+    telemetry_file: string
+    model_file: string
+  }
+  results_md?: string
+  summary_table: Array<{
+    mode: string
+    scenario: string
+    n_runs: string
+    recovery_rate: string
+    mean_latency_ms_mean: string
+    mean_latency_ms_stdev: string
+    p95_latency_ms_mean: string
+    p95_latency_ms_stdev: string
+    throughput_mbps_mean: string
+    throughput_mbps_stdev: string
+    loss_pct_mean: string
+    loss_pct_stdev: string
+    utilization_balance_mean: string
+    utilization_balance_stdev: string
+    congestion_duration_s_mean: string
+    congestion_duration_s_stdev: string
+    recovery_time_s_mean: string
+    recovery_time_s_stdev: string
+    reroute_count_mean: string
+    reroute_count_stdev: string
+  }>
+  ml_models: {
+    random_forest?: any
+    logistic_regression?: any
+  }
+  ml_general: {
+    trained_at?: string
+    dataset?: string
+    decision_threshold: number
+    winner: string
+  }
+  features: Array<{ name: string; importance: number }>
+  patterns: Record<string, number>
+  time_series_sample: Array<{
+    time: number
+    tx_mbps: number
+    rx_mbps: number
+    util_pct: number
+    latency_ms: number
+    congested: boolean
+  }>
+  total_dataset_rows: number
+}
+
+/**
+ * Resilient live WebSocket manager with exponential backoff and delta synchronisation.
+ */
+export function liveSocket(
+  onFrame: (f: LiveFrame) => void,
+  onStateChange?: (state: 'connecting' | 'connected' | 'stale' | 'down') => void,
+  topoId?: string,
+): { close: () => void; isConnected: () => boolean } {
+  let ws: WebSocket | null = null
+  let isClosedManually = false
+  let retryCount = 0
+  let reconnectTimer: number | null = null
+
+  function connect() {
+    if (isClosedManually) return
+
+    const access = tokens.access()
+    const url = `${BASE.replace(/^http/, 'ws')}/ws/live?token=${encodeURIComponent(access ?? '')}${topoId ? `&topo_id=${encodeURIComponent(topoId)}` : ''}`
+
+    onStateChange?.('connecting')
+
     try {
-      onFrame(JSON.parse(event.data) as LiveFrame)
+      ws = new WebSocket(url)
     } catch {
-      /* a malformed frame should not tear down the stream */
+      scheduleReconnect()
+      return
+    }
+
+    ws.onopen = () => {
+      retryCount = 0
+      onStateChange?.('connected')
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const raw = JSON.parse(event.data)
+        const validated = safeValidate(LiveFrameSchema, raw, 'LiveFrame')
+        if (validated.success) {
+          const frame = validated.data as unknown as LiveFrame
+          // Server clock offset calculation from frame.at
+          if (frame.at) {
+            serverClockOffsetMs = frame.at * 1000 - Date.now()
+          }
+          onFrame(frame)
+        }
+      } catch {
+        /* malformed message is safely discarded */
+      }
+    }
+
+    ws.onclose = () => {
+      if (!isClosedManually) {
+        onStateChange?.('down')
+        scheduleReconnect()
+      }
+    }
+
+    ws.onerror = () => {
+      ws?.close()
     }
   }
-  socket.onclose = onClose
-  return socket
+
+  function scheduleReconnect() {
+    if (isClosedManually) return
+    const delay = Math.min(15000, 1000 * Math.pow(1.5, retryCount))
+    retryCount++
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = window.setTimeout(connect, delay)
+  }
+
+  connect()
+
+  return {
+    close: () => {
+      isClosedManually = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      ws?.close()
+    },
+    isConnected: () => ws?.readyState === WebSocket.OPEN,
+  }
 }
 
 export { BASE as API_BASE }

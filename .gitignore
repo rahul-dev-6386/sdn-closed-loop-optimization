@@ -1,34 +1,57 @@
-# venv / build artefacts
+# Python virtual environments & build artifacts
 .venv/
+env/
+venv/
 *.egg-info/
 __pycache__/
 *.py[cod]
-
-# generated data and results
-data/telemetry*.csv
-data/logs/
-results/*.joblib
-results/*.png
-results/*.csv
-results/*.json
-
-# dashboard
-dashboard/react-app/node_modules/
-dashboard/react-app/build/
-
-# misc
 .pytest_cache/
-.DS_Store
-# generated port map (rebuilt by `make portmap`, replaced by P4 discovery)
+
+# Node / Frontend artifacts
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.env.local
+**/.env.local
+*.tsbuildinfo
+
+# SQLite databases & runtime data
+data/sdn.db*
+future/data/sdn.db*
 data/portmap.json
 data/topology.json
-data/sdn.db*
+data/dataset_progress.json
+data/telemetry*.csv
+data/models/
+data/logs/
 
-# secrets
+# Raw experiment logs and backups
+*.log
+**/*.log
+*.bak
+**/*.bak
+results/snapshots/logs/
+results/*.joblib
+
+# UI development scratch snapshots
+results/snapshots_ui/
+results/snapshots_ui_r3/
+scratch/
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.lof
+report/*.lot
+report/preview*.png
+report/page_preview*.png
+
+# Secrets
 .env
 
-# Collection progress marker (rewritten in place by ml/collect_dataset.py)
-data/dataset_progress.json
-
-# Generated PDF exports (regenerate with `make pdf`)
-docs/*.pdf
+# OS artifacts
+.DS_Store
+Thumbs.db

@@ -1,0 +1,135 @@
+\chapter{Literature Review and Background}
+\label{ch:lit_review}
+
+\section{Software-Defined Networking and OpenFlow 1.3}
+Software-Defined Networking (SDN) represents an architectural evolution in data communication networks \cite{mckeown2008openflow, kreutz2015software}. By decoupling the forwarding hardware (data plane) from the control intelligence (control plane), SDN centralizes network management and exposes standardized programmatic interfaces.
+
+\subsection{The OpenFlow 1.3 Protocol Mechanics}
+The southbound protocol standardized by the Open Networking Foundation (ONF) is OpenFlow 1.3 \cite{openflow13spec}. Unlike earlier versions, OpenFlow 1.3 introduced multi-table pipelining, group tables, meter tables, and extensive per-port and per-flow counter statistics.
+
+\begin{figure}[H]
+  \centering
+  \begin{tcolorbox}[colback=codebg,colframe=sdnnavy!60,arc=2pt,title=OpenFlow 1.3 Switch Pipeline]
+  \centering
+  \small\ttfamily
+  Packet In $\longrightarrow$ [Table 0: Ingress/Classifier] $\longrightarrow$ [Table 1: Detour/Policy] $\longrightarrow$ [Table 2: L2/L3 Forwarding] $\longrightarrow$ Output Port / Drop\\
+  $\quad\quad\quad\quad\quad\quad\quad\quad\downarrow$ (Miss / Async Alert)\\
+  $\quad\quad\quad\quad\quad\quad$ Controller (\texttt{OFPT\_PACKET\_IN} / Multipart Port Stats)
+  \end{tcolorbox}
+  \caption{OpenFlow 1.3 multi-table match-action pipeline with controller telemetry interaction.}
+  \label{fig:of13_pipeline}
+\end{figure}
+
+The core primitives utilized in this research include:
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Flow Tables and Match-Action Rules}: Each switch maintains one or more flow tables containing flow entries. A flow entry consists of match fields (e.g., ingress port, Ethernet type, IPv4 source/destination, transport port), priority, counters, instructions, and timeouts (\texttt{idle\_timeout}, \texttt{hard\_timeout}).
+  \item \textbf{Multipart Port Statistics (\texttt{OFPMP\_PORT\_STATS})}: The controller issues periodic \texttt{OFPPortStatsRequest} messages to poll physical and virtual switch interfaces. The switch responds asynchronously with \texttt{OFPPortStatsReply} records containing \texttt{rx\_packets}, \texttt{tx\_packets}, \texttt{rx\_bytes}, \texttt{tx\_bytes}, \texttt{rx\_dropped}, \texttt{tx\_dropped}, and duration timers (\texttt{duration\_sec}, \texttt{duration\_nsec}).
+  \item \textbf{Flow Modification Messages (\texttt{OFPFC\_ADD}, \texttt{OFPFC\_MODIFY}, \texttt{OFPFC\_DELETE})}: Used by the controller to insert or alter forwarding paths dynamically in response to telemetry observations.
+\end{itemize}
+
+\subsection{The Ryu Controller Framework}
+The controller layer in this project is built upon the Ryu SDN framework \cite{fujimoto2016ryu}. Ryu is a component-based, event-driven SDN controller written in Python that natively implements OpenFlow 1.0 through 1.5. Ryu utilizes the Eventlet concurrent networking library, executing an asynchronous greenlet event loop. This architectural design requires strict non-blocking operations; as will be examined in Chapter~\ref{ch:postmortem_bugs}, unbuffered standard output pipes in child processes can stall the greenlet cooperative scheduler, causing silent telemetry capture death.
+
+\section{Traditional Congestion Control Mechanisms}
+Network congestion occurs when the aggregate arrival rate of packets at a network switch output port exceeds the port's transmission line capacity $C$:
+\begin{equation}
+  \sum_{i \in \text{Flows}} R_i(t) > C
+\end{equation}
+When this condition persists, switch egress buffers accumulate packets until buffer capacity $B_{\text{max}}$ is exhausted, after which incoming packets are discarded via tail drop.
+
+\subsection{End-to-End Transport Layer Congestion Control}
+For over three decades, TCP has served as the primary mechanism for preventing internet congestion collapse.
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Loss-Based TCP (Reno, Cubic)}: TCP Reno and Cubic interpret packet loss (inferred via triple duplicate ACKs or retransmission timeouts) as an indicator of congestion. Upon detecting loss, TCP Reno applies Multiplicative Decrease:
+  \begin{equation}
+    cwnd_{t+1} = \frac{1}{2} cwnd_t
+  \end{equation}
+  TCP Cubic replaces the linear additive increase phase with a cubic window growth function:
+  \begin{equation}
+    W_{\text{cubic}}(t) = C \cdot (t - K)^3 + W_{\text{max}}
+  \end{equation}
+  While robust over static wide-area links, loss-based algorithms suffer in low-latency datacenter and high-bandwidth SDN fabrics. They deliberately induce bufferbloat by driving switch buffers to 100\% capacity before backing off, creating latency spikes and subsequent throughput troughs.
+  \item \textbf{Delay-Based and Rate-Based TCP (DCTCP, BBR)}: Data Center TCP (DCTCP) \cite{alizadeh2010data} leverages Explicit Congestion Notification (ECN) markings from switches to scale window reductions proportionally to the extent of buffer accumulation. Google's BBR (Bottleneck Bandwidth and Round-trip propagation time) \cite{cardwell2017bbr} constructs an explicit model of the network pipe, alternating between pacing rate probing and round-trip time estimation. While superior to loss-based TCP, transport-layer mechanisms are inherently decentralized: individual host endpoints lack global topology visibility and cannot reroute traffic around an isolated bottleneck link.
+\end{itemize}
+
+\subsection{Active Queue Management (AQM)}
+To address bufferbloat at the switch level, Active Queue Management algorithms such as Random Early Detection (RED) \cite{floyd1993random} and Controlled Delay (CoDel) \cite{nichols2012controlling} drop or mark packets probabilistically before the physical buffer overflows.
+\begin{equation}
+  P_{\text{drop}} = \begin{cases} 
+    0 & \bar{q} < \text{min}_{\text{th}} \\
+    \frac{\bar{q} - \text{min}_{\text{th}}}{\text{max}_{\text{th}} - \text{min}_{\text{th}}} P_{\text{max}} & \text{min}_{\text{th}} \le \bar{q} \le \text{max}_{\text{th}} \\
+    1 & \bar{q} > \text{max}_{\text{th}}
+  \end{cases}
+\end{equation}
+However, AQM does not increase aggregate carried throughput: it merely forces transport senders to back off. In networks possessing rich multipath topologies (such as Clos, Spine-Leaf, or mesh WANs), dropping packets on a congested path while adjacent alternate links sit idle is fundamentally inefficient.
+
+\subsection{Multi-Path Forwarding: ECMP and Its Pitfalls}
+Equal-Cost Multi-Path (ECMP) \cite{hopps2000analysis} is the industry-standard method for spreading traffic across multiple shortest paths. ECMP computes a 5-tuple hash of packet headers (IPv4 source/destination, Protocol, L4 source/destination ports) and hashes the packet onto one of $k$ equal-cost next hops:
+\begin{equation}
+  \text{NextHop} = \text{Hash}(\text{IP}_{\text{src}}, \text{IP}_{\text{dst}}, \text{Proto}, \text{Port}_{\text{src}}, \text{Port}_{\text{dst}}) \pmod k
+\end{equation}
+
+\begin{hazardbox}[Hash Collisions and Blind Forwarding in ECMP]
+Despite widespread deployment, ECMP is fundamentally load-blind and flow-size agnostic:
+\begin{enumerate}
+  \item \textbf{Elephant Flow Collisions}: If two high-bandwidth elephant flows hash to the same physical egress link, that link immediately saturates while alternate equal-cost links remain underutilized.
+  \item \textbf{Equal-Cost Restriction}: ECMP cannot route traffic over paths that differ in hop count or propagation delay by even a single metric unit, completely ignoring underutilized non-equal-cost detours.
+\end{enumerate}
+\end{hazardbox}
+
+\section{Machine Learning in Network Traffic Engineering}
+Recognizing the limitations of static heuristic routing, researchers have increasingly explored Machine Learning (ML) for traffic prediction, anomaly detection, and automated routing \cite{benson2010network, curtis2011mahout}.
+
+\subsection{Classification vs. Regression in Congestion Forecasting}
+Two primary mathematical formulations exist for predicting network congestion:
+\begin{enumerate}
+  \item \textbf{Regression on Continuous Load}: Models forecast the exact numeric link utilization $\hat{U}(t + \Delta t) \in [0.0, 1.0]$ at a future timestamp. While informative, continuous load prediction is highly sensitive to high-frequency noise and packet jitter. Minor regression errors around the decision boundary (e.g., predicting 0.79 vs 0.81) can trigger erratic route flapping.
+  \item \textbf{Binary Hazard Classification}: Models estimate the calibrated posterior probability that a link will cross a hazard saturation threshold within a forward horizon window $W$:
+  \begin{equation}
+    P(Y_t = 1 \mid \mathbf{x}_t) = P\left(\max_{k \in [t+2\text{s}, t+12\text{s}]} U(k) \ge 0.80 \ \middle|\ \mathbf{x}_t\right)
+  \end{equation}
+  where $\mathbf{x}_t$ is a vector of temporal telemetry features extracted over a trailing sliding window. Binary hazard forecasting enables clear integration with risk-adjusted cost functions and hysteresis dampening filters.
+\end{enumerate}
+
+\subsection{Methodological Flaws in Prior Work: The Temporal Leakage Trap}
+A critical finding of our literature analysis is that many published machine learning models in networking report deceptively high classification accuracies ($>99\%$) due to \textbf{temporal sliding-window data leakage}.
+
+When telemetry is collected as a continuous time series and sampled via rolling windows of size $w$ (e.g., 12 samples over 24 seconds), adjacent feature vectors share $w-1$ identical raw measurements:
+\begin{equation}
+  \mathbf{x}_t = [s_{t-11}, s_{t-10}, \dots, s_t], \quad \mathbf{x}_{t+1} = [s_{t-10}, s_{t-9}, \dots, s_{t+1}]
+\end{equation}
+If the researcher partitions the dataset into training and testing sets using standard uniform random sampling (or simple cross-validation), $\mathbf{x}_t$ enters the training partition while $\mathbf{x}_{t+1}$ enters the test partition. The machine learning model memorizes the overlapping $11/12$ identical window values. When evaluated, the model achieves near-perfect test scores, but collapses entirely when deployed on an unseen experimental run. As detailed in Chapter~\ref{ch:machine_learning}, our work strictly enforces \textit{run-grouped cross-validation}, isolating entire testbed runs into hold-out test sets.
+
+\section{Agentic AI and LangGraph in Network Operations}
+In recent years, Large Language Models (LLMs) and autonomous agent frameworks have demonstrated capabilities in multi-step reasoning, tool invocation, and decision-making \cite{langgraph2024}. In network operations (NetOps), human operators traditionally evaluate alarms, inspect switch logs, and manually construct command-line interface (CLI) commands to divert traffic during link emergencies.
+
+Agentic AI frameworks structure autonomous reasoning into directed cyclic or acyclic graphs. LangGraph \cite{langgraph2024} formalizes agent execution as a state machine:
+\begin{equation}
+  S_{t+1} = f(S_t, \text{Node}_i)
+\end{equation}
+where $S_t$ is a shared state dictionary, and nodes represent discrete processing stages (observing telemetry, consulting LLM reasoning, executing tools via APIs, and performing verification checks). Unlike unstructured chat agents, a graph-based state machine enforces strict execution boundaries, ensuring that every natural-language action is verified by deterministic post-condition checks before the agent terminates.
+
+\section{Summary and Research Gaps}
+Table~\ref{tab:lit_comparison} summarizes the state of the art in network traffic engineering and contrasts existing paradigms with the proposed system.
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Comparison of network traffic management and congestion control paradigms.}
+  \label{tab:lit_comparison}
+  \begin{tabularx}{\textwidth}{l p{2.8cm} p{2.8cm} p{2.8cm} X}
+    \toprule
+    \textbf{Dimension} & \textbf{Static / OSPF} & \textbf{ECMP} & \textbf{Reactive SDN} & \textbf{Proactive ML+Agent (Ours)} \\
+    \midrule
+    \textbf{Control Stance} & Static & Load-Blind & Post-Failure Reactive & Anticipatory Proactive \\
+    \textbf{Routing Paths} & Single Shortest & Equal-Cost Only & Constrained Alternate & Dynamically Synthesized \\
+    \textbf{Buffer Drops} & High under surge & High (Collisions) & Unavoidable during lag & \textbf{0.00\% (Prevented)} \\
+    \textbf{Lead Time} & None & None & Negative ($T_{\text{slack}} < 0$) & \textbf{+2.005 seconds ($T_{\text{slack}} > 0$)} \\
+    \textbf{Safety Protocol} & Static & Static & Abrupt Flow Mod & \textbf{Make-Before-Break} \\
+    \textbf{Agent Interface} & Manual CLI & Manual CLI & REST API & \textbf{LangGraph Closed-Loop} \\
+    \textbf{Evaluation Rigor} & Heuristic & Simulation & Timestamp-split ML & \textbf{46 Mininet Runs, Held-Out} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+This research addresses the fundamental gap in prior literature: \textbf{uniting high-fidelity predictive telemetry with deterministic Make-Before-Break flow installation and LangGraph agentic orchestration under scientifically rigorous, hold-out empirical testbed evaluation.}

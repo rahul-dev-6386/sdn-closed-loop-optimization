@@ -12,6 +12,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export PYTHONPATH="$ROOT/future:${PYTHONPATH:-}"
 
 VENV=${VENV:-.venv}
 BASE=${BASE:-http://127.0.0.1:8000}
@@ -226,7 +227,7 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/experiments" \
 
 # ------------------------------------------------------------- dashboard ----
 section "7. Dashboard build"
-DASH=dashboard/react-app
+DASH=future/dashboard/react-app
 if [[ -d "$DASH" ]]; then
   if (cd "$DASH" && npm run build >/tmp/p12_vite_build.log 2>&1); then
     ok "dashboard type-checks and builds for production"

@@ -1,0 +1,420 @@
+\documentclass[11pt,a4paper,oneside]{report}
+
+% -----------------------------------------------------------------------------
+% Core Packages
+% -----------------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm,headheight=24pt]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage[hyperfootnotes=false]{hyperref}
+
+% -----------------------------------------------------------------------------
+% Graphics Path
+% -----------------------------------------------------------------------------
+\graphicspath{
+  {../}
+  {../results/}
+  {../results/figures/}
+  {../results/snapshots/}
+  {../results/snapshots_ui_fixes/}
+  {../results/snapshots_ui/}
+  {../results/snapshots_ui_r3/}
+}
+
+% -----------------------------------------------------------------------------
+% Color Palette
+% -----------------------------------------------------------------------------
+\definecolor{sdnnavy}{RGB}{24, 43, 73}
+\definecolor{sdnblue}{RGB}{37, 99, 235}
+\definecolor{sdncyan}{RGB}{14, 165, 233}
+\definecolor{sdngreen}{RGB}{16, 185, 129}
+\definecolor{sdnamber}{RGB}{217, 119, 6}
+\definecolor{sdnred}{RGB}{220, 38, 38}
+\definecolor{codebg}{RGB}{248, 250, 252}
+\definecolor{codeframe}{RGB}{203, 213, 225}
+\definecolor{inkmuted}{RGB}{71, 85, 105}
+
+% -----------------------------------------------------------------------------
+% Hyperref Setup
+% -----------------------------------------------------------------------------
+\hypersetup{
+  colorlinks=true,
+  linkcolor=sdnnavy,
+  citecolor=sdnblue,
+  urlcolor=sdncyan,
+  filecolor=sdnnavy,
+  pdftitle={Autonomous Closed-Loop SDN Congestion Optimization: An Empirical Research & Engineering Report},
+  pdfauthor={SDN Research & Engineering Team},
+  pdfsubject={Software-Defined Networking, Machine Learning, Closed-Loop Telemetry, LangGraph Agentic AI},
+  pdfkeywords={SDN, OpenFlow 1.3, Ryu, Mininet, Machine Learning, Random Forest, Congestion Control, LangGraph, Agentic AI}
+}
+
+% -----------------------------------------------------------------------------
+% Chapter and Section Styling
+% -----------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\sffamily\bfseries\color{sdnnavy}}
+  {\Large\MakeUppercase{\chaptertitlename}\ \thechapter}{2pt}
+  {\Huge}
+\titlespacing*{\chapter}{0pt}{10pt}{20pt}
+
+\titleformat{\section}
+  {\normalfont\sffamily\Large\bfseries\color{sdnnavy}}
+  {\thesection}{1em}{}
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+
+\titleformat{\subsection}
+  {\normalfont\sffamily\large\bfseries\color{sdnblue}}
+  {\thesubsection}{1em}{}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+
+\titleformat{\subsubsection}
+  {\normalfont\sffamily\normalsize\bfseries\color{sdnnavy}}
+  {\thesubsubsection}{1em}{}
+\titlespacing*{\subsubsection}{0pt}{8pt}{3pt}
+
+% -----------------------------------------------------------------------------
+% Header & Footer Styling
+% -----------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\chaptermark}[1]{\markboth{\thechapter.\ #1}{}}
+\renewcommand{\sectionmark}[1]{\markright{\thesection\ #1}}
+\fancyhead[L]{\small\sffamily\color{inkmuted}\nouppercase{\leftmark}}
+\fancyhead[R]{\small\sffamily\color{inkmuted}\nouppercase{\rightmark}}
+\fancyfoot[L]{\small\sffamily\color{inkmuted}Autonomous Closed-Loop SDN Optimization Report}
+\fancyfoot[R]{\small\sffamily\bfseries\color{sdnnavy}\thepage}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0.5pt}
+
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[R]{\small\sffamily\bfseries\color{sdnnavy}\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0.5pt}
+}
+
+% -----------------------------------------------------------------------------
+% Listings Setup
+% -----------------------------------------------------------------------------
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{codeframe},
+  captionpos=b,
+  keywordstyle=\bfseries\color{sdnblue},
+  commentstyle=\itshape\color{inkmuted},
+  stringstyle=\color{sdnamber},
+  numberstyle=\tiny\color{inkmuted},
+  numbers=left,
+  numbersep=8pt,
+  showstringspaces=false,
+  tabsize=2
+}
+
+\lstdefinelanguage{json}{
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numberstyle=\tiny\color{inkmuted},
+  stepnumber=1,
+  numbersep=8pt,
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{codebg},
+  literate=
+   *{0}{{{\color{sdnamber}0}}}{1}
+    {1}{{{\color{sdnamber}1}}}{1}
+    {2}{{{\color{sdnamber}2}}}{1}
+    {3}{{{\color{sdnamber}3}}}{1}
+    {4}{{{\color{sdnamber}4}}}{1}
+    {5}{{{\color{sdnamber}5}}}{1}
+    {6}{{{\color{sdnamber}6}}}{1}
+    {7}{{{\color{sdnamber}7}}}{1}
+    {8}{{{\color{sdnamber}8}}}{1}
+    {9}{{{\color{sdnamber}9}}}{1}
+    {:}{{{\color{sdnnavy}{:}}}}{1}
+    {,}{{{\color{sdnnavy}{,}}}}{1}
+    {\{}{{{\color{sdnblue}{\{}}}}{1}
+    {\}}{{{\color{sdnblue}{\}}}}}{1}
+    {[}{{{\color{sdnblue}{[}}}}{1}
+    {]}{{{\color{sdnblue}{]}}}}{1},
+}
+
+% -----------------------------------------------------------------------------
+% Callout Boxes
+% -----------------------------------------------------------------------------
+\newtcolorbox{takeawaybox}[1][Key Finding]{
+  enhanced,
+  colback=sdngreen!7!white,
+  colframe=sdngreen!80!black,
+  boxrule=1pt,
+  arc=3pt,
+  fonttitle=\bfseries\sffamily,
+  coltitle=white,
+  title={#1},
+  before skip=10pt,
+  after skip=10pt
+}
+
+\newtcolorbox{hazardbox}[1][Critical Warning / Hazard]{
+  enhanced,
+  colback=sdnred!7!white,
+  colframe=sdnred!80!black,
+  boxrule=1pt,
+  arc=3pt,
+  fonttitle=\bfseries\sffamily,
+  coltitle=white,
+  title={#1},
+  before skip=10pt,
+  after skip=10pt
+}
+
+\newtcolorbox{infobox}[1][System Context]{
+  enhanced,
+  colback=sdncyan!7!white,
+  colframe=sdncyan!80!black,
+  boxrule=1pt,
+  arc=3pt,
+  fonttitle=\bfseries\sffamily,
+  coltitle=white,
+  title={#1},
+  before skip=10pt,
+  after skip=10pt
+}
+
+\newtcolorbox{formulabox}[1][Mathematical Formulation]{
+  enhanced,
+  colback=codebg,
+  colframe=sdnnavy!80!black,
+  boxrule=1pt,
+  arc=3pt,
+  breakable=false,
+  fonttitle=\bfseries\sffamily,
+  coltitle=white,
+  title={#1},
+  before skip=8pt,
+  after skip=8pt
+}
+
+% -----------------------------------------------------------------------------
+% Document Body
+% -----------------------------------------------------------------------------
+\begin{document}
+
+% -----------------------------------------------------------------------------
+% Title Page
+% -----------------------------------------------------------------------------
+\begin{titlepage}
+  \centering
+  \vspace*{0.3cm}
+  
+  {\Large\bfseries EC 466 -- Software Defined Networks}\\[1.2cm]
+  
+  \includegraphics[width=4.2cm]{iiit_dharwad_logo_hires.png}\\[1.2cm]
+  
+  {\LARGE\bfseries Autonomous Closed-Loop\\Software-Defined Network Optimization\par}\vspace{0.3cm}
+  {\large\textit{Proactive Telemetry Modeling, LangGraph Agentic Remediation,\\and Make-Before-Break Multi-Path Detour Rerouting}\par}\vspace{0.8cm}
+  
+  {\Large\bfseries Group 20}\\[0.3cm]
+  
+  \begin{tabular}{ll}
+    \toprule
+    \textbf{Member} & \textbf{Roll number} \\
+    \midrule
+    Rahul Patel & 23BDS047 \\
+    Vijaypal Singh Rathore & 23BDS067 \\
+    Satym Giri & 23BEC047 \\
+    Madhur Singh & 23BEC024 \\
+    Pratyush Anand & 23BEC039 \\
+    M D Adnan Khan & 23BEC028 \\
+    \bottomrule
+  \end{tabular}
+  
+  \vfill
+  
+  \begin{flushleft}
+    \textbf{Instructor}: Dr. Jagadeesha R B\\
+    \textbf{Institute}: IIIT Dharwad\\
+    \textbf{Date}: November 2026
+  \end{flushleft}
+\end{titlepage}
+
+% -----------------------------------------------------------------------------
+% Front Matter
+% -----------------------------------------------------------------------------
+\pagenumbering{roman}
+
+\chapter*{Executive Summary}
+\addcontentsline{toc}{chapter}{Executive Summary}
+
+This technical report delivers a systematic, empirically validated investigation into the design, mathematical formulation, implementation, and evaluation of an autonomous closed-loop traffic optimization system for Software-Defined Networks (SDN). Modern datacenter, carrier, and wide-area transport networks suffer from goodput degradation and packet loss when sudden, bursty traffic surges saturate link egress buffers. Conventional reactive routing protocols (such as Equal-Cost Multi-Path [ECMP] and reactive threshold-based rerouting) respond only after queue overflow has already occurred and degraded TCP congestion windows.
+
+To address this challenge, we develop a closed-loop control system structured on the continuous cycle: \textbf{Observe $\longrightarrow$ Predict $\longrightarrow$ Decide $\longrightarrow$ Reroute $\longrightarrow$ Verify}.
+
+\noindent\textbf{Key System Highlights \& Empirical Findings}:
+\begin{itemize}[leftmargin=1.2em,itemsep=2pt,topsep=3pt,parsep=0pt]
+  \item \textbf{High-Fidelity Telemetry Pipeline}: An OpenFlow 1.3 telemetry collector polls switch port counters at $0.5\,\text{Hz}$ ($T_{\text{poll}} = 2.0\,\text{s}$) across kernel datapaths (paired with a $2\,\text{Hz}$ WebSocket UI broadcast stream), extracting stationary rolling temporal features across 12-sample ($24\,\text{s}$) sliding windows.
+  \item \textbf{Predictive Machine Learning}: Using a curated dataset of 12,180 real OpenFlow port-stats records spanning five distinct workload profiles (Bursty On/Off, Continuous Ramp, Periodic Peaks, Elephant/Mice, and Steady Low negative control), an ensemble Random Forest classifier achieves a Precision-Recall Area Under Curve (\textbf{PR-AUC}) of \textbf{0.9995} and ROC-AUC of \textbf{0.9999}. Validated using a \textit{run-grouped partition} holding out entire Mininet executions (2,764 records) to ensure zero sliding-window autocorrelation leakage. Feature importance is governed by cumulative volume (\texttt{utilization\_\_mean} at 20.84\%) and packet velocity (\texttt{tx\_packet\_rate\_pps\_\_mean} at 15.67\%) rather than noise-sensitive high-frequency slopes.
+  \item \textbf{Anticipatory Lead Time \& Timing Margin}: The model provides a verified \textbf{2.005-second proactive early warning lead time} (bounded by the 2.0-second discrete polling quantum plus label guard-band) before link load breaches the 80\% physical capacity threshold. Accounting for model inference ($T_{\text{infer}} \approx 1.2\,\text{ms}$), path computation ($T_{\text{compute}} \approx 0.5\,\text{ms}$), and flow-mod installation ($T_{\text{flowmod}} \approx 18.1\,\text{ms}$), the operational timing slack is governed by polling phase jitter $T_{\text{poll\_delay}} \in [0, 2.0]\,\text{s}$:
+  \[
+    T_{\text{slack}} = (T_{\text{breach}} - T_{\text{detect}}) - (T_{\text{poll\_delay}} + T_{\text{infer}} + T_{\text{compute}} + T_{\text{flowmod}})
+  \]
+  Under favorable polling phase alignment ($T_{\text{poll\_delay}} \approx 0$), the system maintains $T_{\text{slack}} \approx 1.985\,\text{s} > 0$, while worst-case alignment ($T_{\text{poll\_delay}} \approx 2.0\,\text{s}$) places the controller at the threshold of reactivity, mathematically demonstrating that telemetry polling frequency directly bounds proactive control margins.
+  \item \textbf{Agentic AI Remediation \& Cognitive Audit}: An architecturally isolated LangGraph StateGraph engine coordinates natural-language operator commands, LLM-based root-cause risk assessment, and cognitive audit explanations, while delegating routing arithmetic (Dijkstra) and Make-Before-Break flow-mod synthesis to verified deterministic controller primitives.
+  \item \textbf{Rigorous Mininet Empirical Sweeps (46 Runs)}: Across 46 Mininet 2.3.0 experiment runs on the Double Diamond topology under Linux TC kernel queues, ML-Aware proactive optimization completely preempted active link buffer saturation (\textbf{0.00\,s duration} vs $0.46$\,s in static shortest routing). Under bursty traffic ramps, it delivered the highest mean goodput ($1.7265 \pm 0.0024$\,Mbps vs $1.7191 \pm 0.0019$\,Mbps baseline, a modest +0.43\% gain on 10\,Mbps links), while accepting an expected propagation delay tradeoff ($14.24 \pm 1.03$\,ms vs $13.55 \pm 1.74$\,ms) and transient reordering packet loss ($1.11 \pm 0.37\%$ vs $0.94 \pm 0.21\%$) along the longer multi-hop detour corridor. Under extreme hot-sink elephant flow flooding, concurrent multi-client iperf3 contention exhausted host socket buffers ($\approx 0.001$\,Mbps across all modes), highlighting harness client saturation boundaries.
+  \item \textbf{Wide-Area Backbone Simulation Demonstration}: On the 9-city Internet2 Abilene wide-area backbone under an interactive simulation demonstration of a 14.0\,Mbps bottleneck surge, the controller dynamically synthesizes a 5-hop southern detour ($\text{SFO} \to \text{LAX} \to \text{DFW} \to \text{ATL} \to \text{WDC} \to \text{NYC}$), relieving the saturated Denver--Chicago link from 100\% utilization down to 1\% ($0.1$\,Mbps) with zero packet drops.
+\end{itemize}
+
+\vspace{0.4cm}
+\noindent\textbf{Keywords}: Software-Defined Networking, OpenFlow 1.3, Ryu Controller, Machine Learning, Random Forest, LangGraph Agentic AI, Congestion Avoidance, Make-Before-Break, Mininet.
+
+\clearpage
+
+% -----------------------------------------------------------------------------
+% Table of Contents, Figures, and Tables
+% -----------------------------------------------------------------------------
+\setcounter{tocdepth}{1}
+\tableofcontents
+\clearpage
+
+\begingroup
+\makeatletter
+\renewcommand{\clearpage}{\relax}
+\renewcommand{\cleardoublepage}{\relax}
+\makeatother
+\listoffigures
+\vspace{0.8cm}
+\listoftables
+\endgroup
+\clearpage
+
+\pagenumbering{arabic}
+
+% -----------------------------------------------------------------------------
+% Main Chapters
+% -----------------------------------------------------------------------------
+\input{chapters/ch1_intro_and_literature}
+\input{chapters/ch2_architecture_and_design}
+\input{chapters/ch4_machine_learning}
+\input{chapters/ch5_agentic_ai}
+\input{chapters/ch6_experiments_evaluation}
+\input{chapters/ch6_implementation_and_postmortem}
+\input{chapters/ch10_conclusion}
+
+% -----------------------------------------------------------------------------
+% Appendices
+% -----------------------------------------------------------------------------
+\appendix
+\input{appendices/app_a_math_and_specs}
+\input{appendices/app_b_ledger_and_topologies}
+
+% -----------------------------------------------------------------------------
+% Bibliography
+% -----------------------------------------------------------------------------
+\begin{thebibliography}{99}
+\addcontentsline{toc}{chapter}{Bibliography}
+
+\bibitem{mckeown2008openflow}
+N.~McKeown, T.~Anderson, H.~Balakrishnan, G.~Parulkar, L.~Peterson, J.~Rexford, S.~Shenker, and J.~Turner.
+\newblock Openflow: enabling innovation in campus networks.
+\newblock {\em ACM SIGCOMM Computer Communication Review}, 38(2):69--74, 2008.
+
+\bibitem{kreutz2015software}
+D.~Kreutz, F.~M.~V. Ramos, P.~E. Verissimo, C.~E. Rothenberg, S.~Azodolmolky, and S.~Uhlig.
+\newblock Software-defined networking: A comprehensive survey.
+\newblock {\em Proceedings of the IEEE}, 103(1):14--76, 2015.
+
+\bibitem{alizadeh2010data}
+M.~Alizadeh, A.~Greenberg, D.~A. Maltz, J.~Padhye, P.~Patel, B.~Prabhakar, S.~Sengupta, and M.~Sridharan.
+\newblock Data center tcp (dctcp).
+\newblock In {\em ACM SIGCOMM 2010 Conference}, pages 63--74, 2010.
+
+\bibitem{cardwell2017bbr}
+N.~Cardwell, Y.~Cheng, C.~S. Gunn, S.~H. Yeganeh, and V.~Jacobson.
+\newblock Bbr: Congestion-based congestion control.
+\newblock {\em Communications of the ACM}, 60(2):58--66, 2017.
+
+\bibitem{hopps2000analysis}
+C.~Hopps.
+\newblock Analysis of an equal-cost multi-path algorithm.
+\newblock {\em RFC 2992, Internet Engineering Task Force}, 2000.
+
+\bibitem{floyd1993random}
+S.~Floyd and V.~Jacobson.
+\newblock Random early detection gateways for congestion avoidance.
+\newblock {\em IEEE/ACM Transactions on Networking}, 1(4):397--413, 1993.
+
+\bibitem{nichols2012controlling}
+K.~Nichols and V.~Jacobson.
+\newblock Controlling queue delay.
+\newblock {\em Communications of the ACM}, 55(7):42--50, 2012.
+
+\bibitem{lantz2010network}
+B.~Lantz, B.~Heller, and N.~McKeown.
+\newblock A network in a laptop: rapid prototyping for software-defined networks.
+\newblock In {\em ACM HotNets-IX}, pages 1--6, 2010.
+
+\bibitem{breiman2001random}
+L.~Breiman.
+\newblock Random forests.
+\newblock {\em Machine Learning}, 45(1):5--32, 2001.
+
+\bibitem{pedregosa2011scikit}
+F.~Pedregosa et~al.
+\newblock Scikit-learn: Machine learning in python.
+\newblock {\em Journal of Machine Learning Research}, 12:2825--2830, 2011.
+
+\bibitem{langgraph2024}
+LangChain Inc.
+\newblock LangGraph: Building stateful, multi-agent applications with graph structures.
+\newblock {\em Technical Documentation}, 2024. \url{https://github.com/langchain-ai/langgraph}.
+
+\bibitem{openflow13spec}
+Open Networking Foundation.
+\newblock Openflow switch specification version 1.3.5 (wire protocol 0x04).
+\newblock {\em ONF Technical Standard}, 2015.
+
+\bibitem{fujimoto2016ryu}
+Ryu SDN Framework Community.
+\newblock Ryu: Component-based software defined networking framework.
+\newblock {\em Open Source Project}, 2016. \url{https://ryu-sdn.org/}.
+
+\bibitem{tipper2009internet2}
+D.~Tipper, S.~Dahlberg, H.~S.~Rhee, and S.~Shin.
+\newblock Providing fault tolerance in wireless access networks.
+\newblock {\em IEEE Communications Magazine}, 40(1):58--64, 2002.
+
+\bibitem{curtis2011mahout}
+A.~R. Curtis, J.~C. Mogul, J.~Tourrilhes, P.~Yalagandula, P.~Sharma, and S.~Banerjee.
+\newblock Devoflow: Scaling flow management for high-performance networks.
+\newblock In {\em ACM SIGCOMM 2011 Conference}, pages 254--265, 2011.
+
+\bibitem{benson2010network}
+T.~Benson, A.~Akella, and D.~A. Maltz.
+\newblock Network traffic characteristics of data centers and issues for design.
+\newblock In {\em ACM Internet Measurement Conference (IMC)}, pages 267--280, 2010.
+
+\end{thebibliography}
+
+\end{document}
