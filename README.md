@@ -253,7 +253,7 @@ sudo pacman -S --needed openvswitch iperf3 net-tools ethtool psmisc socat
 
 # 1. CPython 3.9 (eventlet 0.30.2 cannot build on the host's 3.14)
 mise install python@3.9
-mise where python@3.9            # -> /home/rahul/.local/share/mise/installs/python/3.9.25
+mise where python@3.9            # -> ~/.local/share/mise/installs/python/3.9.25
 "$(mise where python@3.9)/bin/python3" -m venv .venv
 
 # 2. Python packages (pins + the two patched installs)

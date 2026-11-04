@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """P2 acceptance test -- multipath topology, run as ROOT.
 
-    sudo /home/rahul/sdn_project/.venv/bin/python scripts/verify_p2.py
+    sudo .venv/bin/python scripts/verify_p2.py
 
 For each of the two h1 -> h4 paths, in isolation:
 

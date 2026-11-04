@@ -8,7 +8,7 @@
     "cross_run_windows": true
   },
   "dataset": {
-    "csv": "/home/rahul/sdn_project/data/telemetry_live_labeled.csv",
+    "csv": "data/telemetry_live_labeled.csv",
     "rows": 8780,
     "positives": 1552,
     "positive_rate": 0.1768,
@@ -31,7 +31,7 @@
   },
   "metrics": {
     "trained_at": "2026-10-15T19:18:43+00:00",
-    "dataset_csv": "/home/rahul/sdn_project/data/telemetry_live_labeled.csv",
+    "dataset_csv": "data/telemetry_live_labeled.csv",
     "dataset": "8780 rows x 28 features, 1552 positive (17.7%), 5 patterns, 8 links, 200 link-run series, 1200 rows dropped for an unobserved horizon",
     "feature_builder": "FeatureBuilder(window_w=12, sample_interval_s=2.0s, label_gap_s=2.0s, horizon_n_s=10.0s, columns=28 over 7 fields)",
     "feature_names": [

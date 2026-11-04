@@ -1,5 +1,5 @@
 {
-  "config": "/home/rahul/sdn_project/config.yaml",
+  "config": "config.yaml",
   "datapath": "kernel",
   "bandwidth_tolerance": 0.1,
   "rtt_tolerance_pct": 15.0,

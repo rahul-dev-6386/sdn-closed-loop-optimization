@@ -7,8 +7,8 @@ writer does without a lot of work.
 
 Usage
 -----
-    python scripts/export_pdf.py PROGRESS_REPORT.md
-    python scripts/export_pdf.py PROGRESS_REPORT.md -o docs/report.pdf
+    python scripts/export_pdf.py docs/PROGRESS_REPORT.md
+    python scripts/export_pdf.py docs/PROGRESS_REPORT.md -o docs/report.pdf
     python scripts/export_pdf.py README.md --title "Technical Documentation"
 
 The stylesheet is print-first: generous line height for readability on paper,

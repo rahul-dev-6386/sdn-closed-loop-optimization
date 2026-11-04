@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """P3 acceptance test -- loop-safe controller. Run as ROOT.
 
-    sudo /home/rahul/sdn_project/.venv/bin/python scripts/verify_p3.py
+    sudo .venv/bin/python scripts/verify_p3.py
 
 Launches ``ryu-manager`` with ``controller.sdn_controller`` against a live P2
 topology and checks, in order:
