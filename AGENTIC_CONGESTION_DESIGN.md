@@ -11,7 +11,7 @@
 |----------|---------------|
 | **Runtime isolation** | Agent runs as a separate process/context; if it crashes, the existing controller continues unaffected |
 | **Code isolation** | New modules added under `agentic/` directory; existing `controller/`, `ml/`, `tests/` untouched |
-| **API isolation** | New `POST /api/agent/` endpoints added alongside existing `/`api/` routes; no existing endpoints modified |
+| **API isolation** | New `/api/agent/*` endpoints added alongside existing routes; no existing endpoints modified |
 | **Database isolation** | Agent uses in-memory state + optional separate SQLite; existing `data/sdn.db` schema unchanged |
 | **Test isolation** | All 637 existing tests remain hermetic; agent features have separate test suite |
 | **Deployment isolation** | Agent can be toggled ON/OFF via feature flag; default OFF in production |
@@ -25,6 +25,16 @@
 - Existing `make test` → 637 passed, 0 failed (unchanged)
 - Existing `make verify-p5-live` → unchanged behavior
 - Existing controller → no performance impact from agent being present (agent is idle when feature flag OFF)
+
+### 1. Overview
+
+This design adds an **agentic AI layer** on top of the existing SDN control plane that can:
+- **Observe** real-time telemetry (link utilization, latency, loss, probe data)
+- **Reason** about congestion state using an LLM via OpenRouter API
+- **Act** to remediate congestion via the existing Ryu controller
+- **Verify** that remediation was effective
+
+The agent operates as a **supervised assistant** — it requires an explicit human trigger ("Fix congestion on link X") but then autonomously decides and executes the remediation path.
 
 ### 2. Architecture
 
@@ -314,14 +324,14 @@ class AgentRemediateRequest(BaseModel):
 
 ### 11. Implementation Phases
 
-| Phase | Description | Effort |
-|-------|-------------|--------|
-| **P0 — Foundation** | LangGraph agent skeleton, telemetry hooks, OpenRouter integration, prompt engineering | 2 weeks |
-| **P1 — Safety Guards** | Implement all safety checks (stale, threshold, hysteresis, make-before-break) | 1 week |
-| **P2 — API Integration** | Add FastAPI endpoints, wire into existing controller state | 1 week |
-| **P3 — Testing & Refinement** | Unit tests for each action path, refine prompts, hysteresis tuning | 2 weeks |
-| **P4 — Operator UI** | Add "Fix congestion" button to P12 dashboard | 1 week |
-| **Total** | **8 weeks** | |
+| Phase | Description | Existing System Impact | Effort |
+|-------|-------------|----------------------|--------|
+| **P0 — Foundation** | LangGraph agent skeleton, telemetry hooks, OpenRouter integration, prompt engineering | **Zero impact** — new `agentic/` directory, feature flag default OFF | 2 weeks |
+| **P1 — Safety Guards** | Implement all safety checks (stale, threshold, hysteresis, make-before-break) | **Zero impact** — additive guards, no modification to existing verify engine | 1 week |
+| **P2 — API Integration** | Add FastAPI endpoints under `/api/agent/`, wire into existing controller state via clean adapters | **Zero impact** — new endpoints only; existing routes untouched | 1 week |
+| **P3 — Testing & Refinement** | Unit tests for each action path, refine prompts, hysteresis tuning | **Zero impact** — separate test directory, existing 637 tests unchanged | 2 weeks |
+| **P4 — Operator UI** | Add "Fix congestion" button to P12 dashboard (optional) | **Zero impact** — optional UI; can be omitted entirely | 1 week |
+| **Total** | **8 weeks** | **No breaking changes** | |
 
 ### 12. Risks & Mitigations
 
