@@ -353,7 +353,7 @@ export function Trace({
             isSimulated
               ? 'source = simulated · Synthetic dynamic flow conservation load'
               : !hasLiveSamples
-              ? 'source = live_portstats (No live samples received from P5 yet)'
+              ? 'source = telemetry_csv — no live samples yet'
               : sourceTooltip(sourceType, `${currentUsedMbps} Mbps measured out of ${capacity} Mbps capacity`)
           }
         >
@@ -368,7 +368,7 @@ export function Trace({
           )}
           <span
             className="trace-source-tag"
-            title={isSimulated ? 'source = simulated' : 'source = live_portstats'}
+            title={isSimulated ? 'source = simulated' : 'source = telemetry_csv (port-stats logged by the controller)'}
           >
             [{isSimulated ? 'SIMULATED' : hasLiveSamples ? 'MEASURED' : 'NO DATA'}]
           </span>

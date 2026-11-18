@@ -22,7 +22,11 @@ reachable from the configuration.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
+import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ryu.lib import hub  # noqa: E402
@@ -31,6 +35,20 @@ from controller.reroute_loop import LoopConfig, RerouteLoop  # noqa: E402
 from routing.reroute import Operation, RerouteError  # noqa: E402
 
 LOGGER = logging.getLogger("controller.reroute_integration")
+
+#: Environment variable holding a path the loop's summary report is written to
+#: after every tick. The P10 experiment harness sets this per run so it can
+#: record what the loop actually did (effective mode, fallbacks, degraded
+#: ticks, reroutes planned) instead of assuming the configured mode held.
+REPORT_ENV_VAR = "SDN_LOOP_REPORT"
+
+#: Environment variable (or default) for the controller's topology state
+#: snapshot — links, graph adjacency, registered flows — which the agent
+#: reads to ask "is there an alternate path right now?". Written atomically
+#: after every tick.
+STATE_ENV_VAR = "SDN_CONTROLLER_STATE"
+CONTROLLER_STATE_PATH = "data/controller_state.json"
+STATE_STALE_AFTER_S = 10.0
 
 
 def make_snapshot_fn(
@@ -47,6 +65,10 @@ def make_snapshot_fn(
     def snapshot() -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for (src, dst, direction), record in telemetry.latest_link_records.items():
+            # Every field the P8 predictor's allowlist needs must be present,
+            # or the feature builder marks each window unusable and every link
+            # silently reports "missing_features" -- an inert forecast that
+            # looks identical to a healthy ml_aware run.
             rows.append({
                 "timestamp": record.timestamp,
                 "src_switch": src,
@@ -56,6 +78,11 @@ def make_snapshot_fn(
                 "latency_ms": record.latency_ms,
                 "loss_pct": record.loss_pct,
                 "tx_rate_mbps": record.tx_rate_mbps,
+                # getattr with None: a record missing the allowlisted fields is
+                # reported by the predictor as unscored, never as zero-load.
+                "rx_rate_mbps": getattr(record, "rx_rate_mbps", None),
+                "tx_packet_rate_pps": getattr(record, "tx_packet_rate_pps", None),
+                "rx_packet_rate_pps": getattr(record, "rx_packet_rate_pps", None),
                 "capacity_mbps": record.capacity_mbps,
                 "is_congested": record.is_congested,
             })
@@ -107,6 +134,12 @@ def make_flow_applier(
     # -- makes every install unresolvable, so every reroute fails and rolls back.
     context: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {}
 
+    _FLOW_MAC_RE = re.compile(r"(?:^|:)([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})$")
+
+    def _flow_dst_mac(flow: str) -> Optional[str]:
+        match = _FLOW_MAC_RE.search(flow or "")
+        return match.group(1) if match else None
+
     def set_path(flow: str, path: Sequence[str]) -> None:
         """Record a flow's steady-state path (no reroute in flight)."""
         path = tuple(path)
@@ -156,7 +189,11 @@ def make_flow_applier(
                          "(in=%s out=%s)", op.kind, op.switch, in_port, out_port)
             return False
 
-        spec = FlowSpec(switch=op.switch, match={"in_port": in_port},
+        dst_mac = _flow_dst_mac(flow)
+        match = {"in_port": in_port}
+        if dst_mac is not None:
+            match["eth_dst"] = dst_mac
+        spec = FlowSpec(switch=op.switch, match=match,
                         out_port=out_port, priority=op.priority,
                         idle_timeout=0, hard_timeout=0,
                         reason=f"reroute {flow}")
@@ -185,18 +222,25 @@ class RerouteIntegration:
         self.loop: Optional[RerouteLoop] = None
         self.thread = None
         self._stopped = False
+        self.report_path: Optional[str] = os.environ.get(REPORT_ENV_VAR) or None
+        from controller.constraints import DEFAULT_CONSTRAINTS_PATH
+        self.constraints_path: Optional[str] = (
+            os.environ.get("SDN_CONSTRAINTS") or DEFAULT_CONSTRAINTS_PATH)
 
     # ------------------------------------------------------------- setup --
     def start(self) -> None:
         """Build the loop and spawn the decision thread."""
         if self.config.mode == "static_shortest":
             LOGGER.info("routing mode is static_shortest; no decision thread")
+            self._publish_static_state()
+            self._write_report()
             return
 
         telemetry = self.controller.telemetry
         programmer = self.controller.flows
         if programmer is None:
             LOGGER.warning("no flow programmer yet; reroute loop not started")
+            self._write_report()
             return
 
         self._applier = make_flow_applier(
@@ -214,11 +258,14 @@ class RerouteIntegration:
         self.loop = RerouteLoop(
             snapshot=make_snapshot_fn(telemetry),
             apply=self._applier,
+            constraints_path=self.constraints_path,
             predictor=predictor,
             stalled=telemetry.is_telemetry_stalled,
             config=self.config,
+            pre_plan=self._sync_plan_context,
         )
         self.loop.observe_links(self._discovered_links())
+        self._write_report()
         self.thread = hub.spawn(self._decision_loop)
         LOGGER.info("reroute loop started in %s mode", self.config.mode)
 
@@ -250,15 +297,26 @@ class RerouteIntegration:
             if self._stopped or self.loop is None:
                 break
             try:
-                self.loop.tick()
+                # The graph must track whatever LLDP discovers *now*, not
+                # whatever it looked like when the loop started -- discovery
+                # lags fabric bring-up, and a stale graph makes every candidate
+                # enumeration return empty, silently disabling rerouting.
+                self.loop.observe_links(self._discovered_links())
+                tick_report = self.loop.tick()
+                import sys as _sys
+                n_flows = len(self.loop.controller.flows)
+                first_flows = list(self.loop.controller.flows)[:2]
+                print(f"TICK n_flows={n_flows} effective={tick_report.effective_mode} flows={first_flows}", file=_sys.stderr)
                 self.publish_forecasts()
                 self._sync_paths()
+                self._publish_state(tick_report)
             except RerouteError as exc:
                 LOGGER.debug("reroute tick skipped: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 # A failure here must never take the controller down; the next
                 # tick retries, and the loop records its own degradation.
                 LOGGER.error("reroute tick failed: %s", exc)
+            self._write_report()
 
     def publish_forecasts(self) -> int:
         """Copy the loop's latest forecasts into the telemetry collector.
@@ -305,6 +363,103 @@ class RerouteIntegration:
     def stop(self) -> None:
         """Stop the decision thread."""
         self._stopped = True
+        self._write_report()
+
+    def _write_report(self) -> None:
+        """Write the loop's summary to ``$SDN_LOOP_REPORT``, atomically.
+
+        No-op unless the harness (or an operator) asked for the file. Never
+        raises: a report-writing failure must not take the control loop down.
+        """
+        if not self.report_path:
+            return
+        try:
+            payload = {"ts": time.time(), "started": self.loop is not None,
+                       "mode": self.config.mode,
+                       "configured_mode": self.config.mode}
+            if self.loop is not None:
+                payload.update(self.loop.mode_report())
+            tmp = self.report_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self.report_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("could not write loop report to %s: %s",
+                           self.report_path, exc)
+
+    def _publish_static_state(self) -> None:
+        """One-shot snapshot for static_shortest (no decision loop exists).
+
+        The graph is still reported so the agent's alternate-path query works;
+        without it the agent would conclude the fabric is down when it is merely
+        in a non-deciding mode.
+        """
+        try:
+            from routing.paths import build_graph
+            adjacency = build_graph(self._discovered_links())
+            payload = {
+                "ts": time.time(),
+                "mode": "static_shortest",
+                "effective_mode": "static_shortest",
+                "graph": adjacency,
+                "links": [{"a": a, "b": b} for a, b in self._discovered_links()],
+                "n_links": len(self._discovered_links()),
+                "flows": [],
+                "constraints": {"block_links": [], "valid_until_epoch": 0, "reason": ""},
+            }
+            env_path = os.environ.get(STATE_ENV_VAR) or CONTROLLER_STATE_PATH
+            state_path = os.path.abspath(env_path)
+            os.makedirs(os.path.dirname(state_path), exist_ok=True)
+            tmp = state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, state_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("could not publish static controller state: %s", exc)
+
+    def _publish_state(self, tick_report: Any = None) -> None:
+        """Write the topology/flows snapshot the agent asks about.
+
+        The agent cannot call into the controller process, but it needs the
+        same three facts the decision loop uses: which links LLDP currently
+        sees, which flows are registered and where they ride, and which links
+        are pinned to infinity by an operator/agent hint. Published as JSON,
+        atomically, every tick. Never raises — a missing snapshot means
+        "fabric down or controller not ticking", which the agent reports.
+        """
+        if self.loop is None:
+            return
+        try:
+            from controller.constraints import read_constraints
+            constraints = read_constraints(self.constraints_path)
+            flows = [
+                {"flow": f, "path": list(state.path)}
+                for f, state in self.loop.controller.flows.items()
+            ]
+            adjacency = {node: list(neigh) for node, neigh in self.loop.graph.items()}
+            payload = {
+                "ts": time.time(),
+                "mode": self.config.mode,
+                "effective_mode": getattr(tick_report, "effective_mode", None),
+                "graph": adjacency,
+                "links": [{"a": a, "b": b} for a, b in self._discovered_links()],
+                "n_links": len(self._discovered_links()),
+                "flows": flows,
+                "constraints": {
+                    "block_links": constraints.get("block_links") or [],
+                    "valid_until_epoch": constraints.get("valid_until_epoch") or 0,
+                    "reason": constraints.get("reason") or "",
+                },
+            }
+            env_path = os.environ.get(STATE_ENV_VAR) or CONTROLLER_STATE_PATH
+            state_path = os.path.abspath(env_path)
+            os.makedirs(os.path.dirname(state_path), exist_ok=True)
+            tmp = state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, state_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("could not publish controller state snapshot: %s", exc)
 
     def report(self) -> Dict[str, Any]:
         """Current loop status for the API and the acceptance tests.

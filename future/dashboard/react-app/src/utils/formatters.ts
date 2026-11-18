@@ -94,7 +94,7 @@ export function sourceTooltip(source: SourceType, detail?: string): string {
     case 'measured':
       return `Source: Measured live telemetry (OVS kernel datapath counters)${detail ? ` - ${detail}` : ''}`
     case 'predicted':
-      return `Source: ML congestion forecast model (RandomForest p>=0.80)${detail ? ` - ${detail}` : ''}`
+      return `Source: ML congestion forecast model (RandomForest p>=0.5)${detail ? ` - ${detail}` : ''}`
     case 'simulated':
       return `Source: Synthetic demo spike injection${detail ? ` - ${detail}` : ''}`
     case 'derived':

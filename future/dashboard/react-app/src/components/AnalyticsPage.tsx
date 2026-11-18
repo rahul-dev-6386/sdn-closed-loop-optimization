@@ -7,7 +7,9 @@
  * 3. results/ml_metrics.json & results/model.joblib (RandomForest vs LogisticRegression hold-out evaluation)
  * 4. data/telemetry_live_labeled.csv (12,180 real OpenFlow port-stats records across 5 traffic patterns)
  * 5. results/figures/*.png (Publication-grade matplotlib/seaborn plots)
- * 6. results/abilene_*.png (Wide-area Internet2 WAN topology empirical rerouting evaluation)
+ * 6. results/abilene_*.png (Illustrative renders of the Abilene WAN scenario —
+ *    NOT reproducible from this repository: no experiment code, telemetry or
+ *    run record for the Abilene topology exists here. Not empirical results.)
  */
 
 import { useState, useEffect, useMemo } from 'react'
@@ -1777,7 +1779,7 @@ export function AnalyticsPage({ onBackToConsole }: Props) {
                   Wide-Area Network Rerouting: Abilene Internet2 Backbone Under Traffic Surge
                 </h3>
               </div>
-              <span className="figure-source-tag">Source: results/abilene_*.png (Empirical WAN Topo Runs)</span>
+              <span className="figure-source-tag">Source: results/abilene_*.png (Illustrative renders — not reproducible from this repo)</span>
             </div>
 
             <div className="figure-publication-wrap">
@@ -1806,14 +1808,14 @@ export function AnalyticsPage({ onBackToConsole }: Props) {
                 </div>
               </div>
               <div className="figure-provenance-caption">
-                Empirical wide-area topology runs on 11-node Abilene WAN backbone. Under ML-Aware Detour, traffic is diverted across 5 southern transit links at safe utilization (~3.8 Mbps, &lt;80%), relieving DEN-ORD to 0.1 Mbps (1%).
+                <strong>⚠ Unverified.</strong> No Abilene experiment code, telemetry or run records exist in this repository, so these images cannot be reproduced from it and must not be cited as measured results. The 46 diamond-topology runs in <code>results/experiments.csv</code> are the only empirical evaluation here; on those, no mode separated from the best. Numbers below describe the intended scenario, not a completed experiment.
               </div>
             </div>
 
             <div className="figure-takeaway">
               <Network size={14} className="text-green" />
               <span>
-                <strong>Quantitative Takeaway:</strong> On complex 11-switch WAN topologies, ML-Aware autonomous detour rerouting resolves the <strong>14.0 Mbps bottleneck spike</strong> on <code>DEN–ORD</code>, dropping its load from <strong>100% (saturated)</strong> down to <strong>1% (0.1 / 10 Mbps)</strong> with <strong>0.0 Mbps packet drops</strong>.
+                <strong>Intended outcome (illustrative, not measured):</strong> On complex 11-switch WAN topologies, an ML-Aware detour is intended to resolve a <strong>14.0 Mbps bottleneck spike</strong> on <code>DEN–ORD</code>, relieving it to a trickle with no drops. This remains unverified — see the provenance note above.
               </span>
             </div>
 
@@ -1821,7 +1823,7 @@ export function AnalyticsPage({ onBackToConsole }: Props) {
               <div className="md-callout md-callout--tip">
                 <div className="md-callout__title">
                   <Network size={13} />
-                  <span>Empirical 11-Switch WAN Verification (100% → 1% Relief)</span>
+                  <span>Illustrative scenario (not a completed experiment)</span>
                 </div>
                 <p>
                   Under a 14.0 Mbps traffic spike on the 11-node Abilene WAN backbone, ML-Aware autonomous detour rerouting relieved the saturated <code>DEN–ORD</code> bottleneck from <strong>100% (14 Mbps)</strong> down to <strong>1% (0.1 Mbps)</strong> with <strong>0.0 Mbps</strong> packet drops.

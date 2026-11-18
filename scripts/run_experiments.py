@@ -232,6 +232,7 @@ def load_telemetry_rows(csv_path: Path) -> List[Dict[str, Any]]:
 def reduce_run(
     mode: str, scenario: str, repetition: int,
     rows: Sequence[Dict[str, Any]],
+    reroute_count: int = 0,
 ) -> Optional[RunMetrics]:
     """Reduce one run's telemetry to a metrics row.
 
@@ -285,8 +286,44 @@ def reduce_run(
         timestamps=timestamps, congested=congested_flags,
         latency_ms=latencies, throughput_mbps=throughputs, loss_pct=losses,
         per_link_utilisation=link_utilisation,
-        reroute_count=0,
+        reroute_count=reroute_count,
     )
+
+
+def loop_report_context(report: Optional[Dict[str, Any]],
+                        configured_mode: str) -> Dict[str, Any]:
+    """Distil the controller's loop report into the CSV context columns.
+
+    An absent or unreadable report means the loop's behaviour was never
+    observed, so ``effective_mode`` stays empty and P11 will classify the run
+    as unverifiable rather than as a mode that held.
+    """
+    ctx: Dict[str, Any] = {"effective_mode": "", "degraded_ticks": 0,
+                           "fallbacks": ""}
+    if not report:
+        return ctx
+    effective = report.get("effective_modes") or {}
+    if int(report.get("n_ticks", 0) or 0) and effective:
+        ctx["effective_mode"] = max(effective.items(), key=lambda kv: kv[1])[0]
+    elif report.get("started") is False and configured_mode == "static_shortest":
+        # static_shortest spawns no decision thread by design; the fabric
+        # forwards on the baseline rules, which *is* static routing.
+        ctx["effective_mode"] = "static_shortest"
+    ctx["degraded_ticks"] = int(report.get("degraded_ticks", 0) or 0)
+    fallbacks = report.get("fallbacks") or {}
+    ctx["fallbacks"] = "; ".join(f"{count}x {reason}"
+                                 for reason, count in sorted(fallbacks.items()))
+    return ctx
+
+
+def read_loop_report(path: Path) -> Optional[Dict[str, Any]]:
+    """Read the controller's loop-report file, or None if it is absent."""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -327,6 +364,9 @@ class ExperimentRunner:
         if self.telemetry_csv.exists():
             self.telemetry_csv.unlink()
 
+        report_path = Path("data/logs") / f"loop_report_{spec.key}.json"
+        report_path.unlink(missing_ok=True)
+
         ryu_proc: Optional[subprocess.Popen] = None
         topo = None
         net = None
@@ -336,7 +376,7 @@ class ExperimentRunner:
         }
 
         try:
-            ryu_proc = self._start_controller(spec)
+            ryu_proc = self._start_controller(spec, report_path)
             topo, net = self._start_fabric()
 
             from traffic.generate import run_live_pattern_on_hosts
@@ -351,8 +391,16 @@ class ExperimentRunner:
             # Let the final telemetry samples land before the fabric dies.
             time.sleep(2.5)
 
+            # What the control loop actually did, from the file it writes per
+            # tick -- not from what the run label claims.
+            report = read_loop_report(report_path)
+            context.update(loop_report_context(report, spec.mode))
+            reroute_count = int(report.get("reroutes_planned", 0) or 0) \
+                if report else 0
+
             rows = load_telemetry_rows(self.telemetry_csv)
-            metrics = reduce_run(spec.mode, spec.scenario, spec.repetition, rows)
+            metrics = reduce_run(spec.mode, spec.scenario, spec.repetition, rows,
+                                 reroute_count=reroute_count)
             context["n_samples_link_runs"] = len(rows)
             if metrics is None:
                 context["error"] = "no telemetry produced"
@@ -365,13 +413,16 @@ class ExperimentRunner:
         finally:
             self._teardown(topo, net, ryu_proc)
 
-    def _start_controller(self, spec: RunSpec) -> subprocess.Popen:
+    def _start_controller(self, spec: RunSpec,
+                          report_path: Optional[Path] = None) -> subprocess.Popen:
         """Start Ryu with the requested routing mode."""
         from ml.collect_dataset import wait_for_port
 
         env = os.environ.copy()
         env["PYTHONPATH"] = "."
         env[LoopConfig.MODE_ENV_VAR] = spec.mode
+        if report_path is not None:
+            env["SDN_LOOP_REPORT"] = str(report_path.resolve())
         # Output goes to a file, not an undrained pipe: a full pipe blocks the
         # controller and silently halts its event loop. See common.proc.
         log_sink = controller_log(f"experiment_{spec.key}")

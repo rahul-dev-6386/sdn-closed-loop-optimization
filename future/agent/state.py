@@ -20,6 +20,8 @@ class AgentState(TypedDict):
     network_state: Dict[str, Any]
     predictions: Dict[str, Any]
     congestion_detected: bool
+    hazard: bool
+    act: bool
     bottleneck_link: str
     analysis: str
     plan: str
@@ -40,6 +42,8 @@ def create_initial_state(task: str = "Analyze network and resolve congestion", t
         "network_state": {},
         "predictions": {},
         "congestion_detected": False,
+        "hazard": False,
+        "act": False,
         "bottleneck_link": "",
         "analysis": "",
         "plan": "",

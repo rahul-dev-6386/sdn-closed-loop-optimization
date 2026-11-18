@@ -42,6 +42,9 @@ interface Props {
   onStopCongestion?: () => void
   isDetourActive: boolean
   onToggleDetour: () => void
+  detourBusy?: boolean
+  detourError?: string | null
+  pathState?: 'ok' | 'unknown' | 'unavailable'
   selectedTopoId: string
   onSelectTopoId: (id: string) => void
   bottleneckLoadText: string
@@ -107,6 +110,9 @@ export function TopologyGraph({
   onStopCongestion,
   isDetourActive,
   onToggleDetour,
+  detourBusy = false,
+  detourError = null,
+  pathState = 'unknown',
   selectedTopoId,
   onSelectTopoId,
   bottleneckLoadText,
@@ -246,16 +252,24 @@ export function TopologyGraph({
   }
 
   // Plain wording decision text
+  const detourVerified = verifyStatus?.passed === true
+  const detourFailing = verifyStatus?.status === 'FAIL'
   const decisionText = useMemo(() => {
     if (!hasActiveRoute) return 'Network Idle — No Active Forwarding'
     if (isDetourActive) {
-      return `Detour via ${currentDef.alternatePath.join('-')} active (diverted around bottleneck)`
+      if (detourFailing) {
+        return `Detour engaged but bottleneck NOT relieved — traffic still on ${currentDef.defaultPath.join('-')}`
+      }
+      if (detourVerified) {
+        return `Detour via ${currentDef.alternatePath.join('-')} active (diverted around bottleneck)`
+      }
+      return `Detour requested via ${currentDef.alternatePath.join('-')} — verifying on the datapath…`
     }
     if (isCongested) {
       return `Primary route active (${currentDef.defaultPath.join('-')}) — Traverses congested bottleneck (${currentDef.bottleneckLink})`
     }
     return `Primary route active (${currentDef.defaultPath.join('-')})`
-  }, [hasActiveRoute, isDetourActive, isCongested, currentDef])
+  }, [hasActiveRoute, isDetourActive, detourFailing, detourVerified, isCongested, currentDef])
 
   const decisionBadgeClass = !hasActiveRoute
     ? 'faint'
@@ -388,15 +402,31 @@ export function TopologyGraph({
             </button>
           )}
 
-          {/* Detour Switch (ON / OFF) */}
+          {/* Detour Switch (ON / OFF) — triggers the real closed-loop fix */}
           <button
             className={`topo-btn topo-btn--detour ${isDetourActive ? 'topo-btn--detour-on' : 'topo-btn--detour-off'}`}
             onClick={onToggleDetour}
-            title="Toggle automated closed-loop detour routing around bottleneck"
+            disabled={detourBusy || pathState === 'unavailable'}
+            title={pathState === 'unavailable'
+              ? 'Controller state unavailable — start the fabric (Start Fabric) and retry'
+              : detourBusy
+                ? 'Agent is running the closed-loop fix — telemetry → pin → controller decision → verification…'
+                : isDetourActive
+                  ? 'Agent diverted the flow around the bottleneck — the pin is held for 30s. Click to release it.'
+                  : 'Ask the agent to relieve the bottleneck — verified closed-loop detour'}
           >
-            <GitFork size={12} />
-            <span>Detour: {isDetourActive ? 'ON' : 'OFF'}</span>
+            <GitFork size={12} className={detourBusy ? 'spin' : ''} />
+            <span>{detourBusy ? 'Agent fixing…' : `Detour: ${isDetourActive ? 'ON' : 'OFF'}`}</span>
           </button>
+          {detourError && (
+            <span
+              className="agent-save-msg text-red"
+              title={detourError}
+              style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              detour: {detourError}
+            </span>
+          )}
         </div>
       </div>
 
@@ -430,7 +460,7 @@ export function TopologyGraph({
               isSimulated
                 ? 'source = simulated · Synthetic dynamic flow conservation load'
                 : !hasLiveSamples
-                ? 'source = live_portstats (No live samples received from P5 yet)'
+                ? 'source = telemetry_csv — no live samples yet'
                 : sourceTooltip('measured')
             }
           >
@@ -605,8 +635,8 @@ export function TopologyGraph({
                           {isSimulated
                             ? `source = simulated (${key}: ${usedMbps.toFixed(1)} / ${cap} Mbps)`
                             : hasLiveSamples
-                            ? `source = live_portstats (${key}: ${usedMbps.toFixed(1)} / ${cap} Mbps)`
-                            : `source = live_portstats (no live samples received for ${key})`}
+                            ? `telemetry_csv · ${key}: ${usedMbps.toFixed(1)} / ${cap} Mbps`
+                            : `telemetry_csv · no samples for ${key}`}
                         </title>
                         <rect
                           x={-22}

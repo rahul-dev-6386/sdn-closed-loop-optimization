@@ -262,6 +262,8 @@ class RerouteLoop:
         stalled: Callable[[], bool] = lambda: False,
         config: Optional[LoopConfig] = None,
         now_fn: Callable[[], float] = time.monotonic,
+        pre_plan: Optional[Callable[[Any], None]] = None,
+        constraints_path: Optional[str] = None,
     ) -> None:
         self.snapshot = snapshot
         self.apply_op = apply
@@ -269,6 +271,17 @@ class RerouteLoop:
         self.stalled = stalled
         self.config = config or LoopConfig()
         self.now_fn = now_fn
+        #: Called with the plan immediately before it is executed. The
+        #: integration uses this to hand the applier the plan's old/new paths
+        #: so installs resolve against the *new* path (steady-state set_path
+        #: only ever knows the old one, which unresolvably rolls every plan
+        #: back).
+        self.pre_plan = pre_plan
+        #: Path to the routing constraints file (shared with the agent).
+        self.constraints_path = constraints_path
+        self._constraints_cache: Dict[str, Any] = {"block_links": [], "valid_until_epoch": 0, "reason": ""}
+        self._constraints_mtime: float = 0.0
+        self._constraints_blocked_cache: Dict[Tuple[str, str], Any] = {}
 
         self.history = LinkHistory(self.config.history_w)
         self.controller = RerouteController(
@@ -299,6 +312,8 @@ class RerouteLoop:
         still see the true connectivity to be able to avoid a congested link.
         """
         self.graph = build_graph(links)
+        LOGGER.debug("loop graph: %d adjacency entries from %d links",
+                     len(self.graph), len(links))
 
     def candidates(self, src: str, dst: str) -> List[SwitchPath]:
         """Candidate paths for a flow's endpoints."""
@@ -379,10 +394,39 @@ class RerouteLoop:
             try:
                 plan = self.controller.decide(flow, paths, metrics, now=now)
             except RerouteError as exc:
+                import sys as _sys
+                msg = f"FLOW {flow}: decision failed {exc!r}"
+                print(msg, file=_sys.stderr)
                 LOGGER.debug("decision failed for %s: %s", flow, exc)
                 continue
+            else:
+                import sys as _sys
+                last = self.controller.decisions[-1] if self.controller.decisions else {}
+                chosen_path = last.get('chosen_path')
+                if chosen_path is not None:
+                    chosen_path = [list(p) for p in chosen_path]
+                parts = [
+                    "FLOW " + str(flow) + ": ok plan=" + str(plan is not None),
+                    "   current=" + str(list(current)),
+                    "   chosen=" + str(chosen_path),
+                    "   cost cur=" + str(last.get('current_cost'))
+                    + " new=" + str(last.get('chosen_cost'))
+                    + " improvement_ratio=" + str(self.config.improvement_ratio)
+                    + " reason=" + str(last.get('reason')),
+                ]
+                print("\n".join(parts), file=_sys.stderr)
             if plan is None:
+                import sys as _sys
+                last = self.controller.decisions[-1] if self.controller.decisions else {}
+                msg = f"FLOW {flow}: no plan, reason={last.get('reason')} cured_path=None cost={last.get('chosen_cost')}"
+                print(msg, file=_sys.stderr)
                 continue
+            if self.pre_plan is not None:
+                try:
+                    self.pre_plan(plan)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("pre-plan hook failed (%s); skipping this reroute", exc)
+                    continue
             result = self._run_plan(plan)
             report.reroutes_applied += result.applied
             report.plans.append({
@@ -446,6 +490,7 @@ class RerouteLoop:
         """
         signals = MODE_SIGNALS.get(effective_mode, MODE_SIGNALS["reactive_threshold"])
         threshold = self.config.congestion_threshold
+        blocked = self._blocked_set()
         latest: Dict[LinkKey, Dict[str, Any]] = {}
         for row in rows:
             key = (str(row.get("src_switch", "")), str(row.get("dst_switch", "")),
@@ -484,8 +529,45 @@ class RerouteLoop:
                 load.p_congestion = (
                     1.0 if load.utilization >= threshold else 0.0
                 )
+            # Agent constraint enforcement via soft-cost penalty:
+            # Rather than hard-removing edges from the topology graph (which would
+            # break comparative path costing and bypass hysteresis validation),
+            # a pinned link is assigned worst-case metrics (100% util, max latency,
+            # 100% loss, 1.0 p_congestion). This inflates C(P_old) ~ 1.0, ensuring
+            # that Yen enumeration still evaluates candidates while the hysteresis
+            # gate (cost_new < 0.85 * cost_old) safely allows moving to an unblocked path.
+            if (key[0], key[1]) in blocked or (key[1], key[0]) in blocked:
+                load = LinkMetrics(
+                    utilization=1.0,
+                    latency_ms=float(self.config.congestion_threshold * 100.0 + 50.0),
+                    loss_pct=100.0,
+                    p_congestion=1.0,
+                )
             metrics[key] = load
         return metrics
+
+    def _blocked_set(self) -> Dict[Tuple[str, str], Any]:
+        """Refresh the constraints file once per tick, keyed by canonical pair."""
+        if not self.constraints_path:
+            return {}
+        try:
+            import os
+            mtime = os.stat(self.constraints_path).st_mtime if os.path.isfile(self.constraints_path) else 0.0
+        except OSError:
+            mtime = 0.0
+        if mtime and mtime == self._constraints_mtime:
+            return self._constraints_blocked_cache
+
+        from controller.constraints import read_constraints, blocked_pairs
+        data = read_constraints(self.constraints_path)
+        pairs = {tuple(p) for p in blocked_pairs(data)}
+        self._constraints_mtime = mtime
+        self._constraints_cache = data
+        self._constraints_blocked_cache = pairs
+        import sys as _sys
+        if pairs:
+            print(f"CONSTRAINTS loaded: {pairs}", file=_sys.stderr, flush=True)
+        return self._constraints_blocked_cache
 
     def _run_plan(self, plan: Any) -> Any:
         """Execute a plan's operations through the injected ``apply``."""
@@ -515,6 +597,11 @@ class RerouteLoop:
         effective: Dict[str, int] = {}
         for tick in self.ticks:
             effective[tick.effective_mode] = effective.get(tick.effective_mode, 0) + 1
+        reasons: Dict[str, int] = {}
+        for decision in self.controller.decisions:
+            key = ("reroute" if decision.get("reroute")
+                   else f"declined: {decision.get('reason')}")
+            reasons[key] = reasons.get(key, 0) + 1
         return {
             "configured_mode": self.config.mode,
             "n_ticks": len(self.ticks),
@@ -523,4 +610,6 @@ class RerouteLoop:
             "degraded_ticks": sum(1 for t in self.ticks if t.degraded),
             "reroutes_planned": sum(len(t.plans) for t in self.ticks),
             "n_flows": len(self.controller.flows),
+            "decision_reasons": reasons,
+            "last_decisions": list(self.controller.decisions[-3:]),
         }

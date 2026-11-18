@@ -193,6 +193,10 @@ class SdnController(app_manager.RyuApp):
         # switches have connected and the flow programmer exists -- starting it
         # now would find no datapaths and no port map.
         self.reroute: Optional["RerouteIntegration"] = None
+        # (flow, switch path) installed before the reroute loop starts, replayed
+        # into it once it does -- otherwise rules installed during fabric bring-up
+        # are invisible to the decision loop forever.
+        self._pending_flows: List[Tuple[str, Tuple[str, ...]]] = []
 
         self.telemetry_enabled = bool(self.config.get("telemetry.enabled", True))
         self.telemetry_thread = hub.spawn(self._telemetry_loop) if self.telemetry_enabled else None
@@ -222,6 +226,10 @@ class SdnController(app_manager.RyuApp):
 
         self.reroute = RerouteIntegration(self)
         self.reroute.start()
+        # Replay anything the fabric installed before the loop existed.
+        for flow, path in getattr(self, "_pending_flows", []):
+            self.reroute.register(flow, path)
+        self._pending_flows = []
         LOGGER.info("reroute loop state: %s", self.reroute.report())
 
     def port_of(self, src: str, dst: str) -> Optional[int]:
@@ -578,6 +586,8 @@ class SdnController(app_manager.RyuApp):
 
         link = self.topology.add_link(src_switch, src_port, dst_switch, dst_port)
         link.last_seen = time.monotonic()
+        # Discovery may complete the last precondition for the P9 loop
+        self._maybe_start_reroute_loop()
         self.switch_links_added[dst_switch] += 1
         LOGGER.info(
             "[LINK_ADDED] %s:%d <-> %s:%d (switch_total=%d, total_links=%d)",
@@ -905,6 +915,9 @@ class SdnController(app_manager.RyuApp):
         self.arp.table.learn(ip, mac, switch, port)
         h_name = self.topology.record_host(None, ip=ip, switch=switch, port=port, mac=mac)
         self._sync_topology_file()
+        # Host learning may complete the preconditions for the P9 loop
+        # (flow programmer + non-empty host_ports + discovered links); retry it.
+        self._maybe_start_reroute_loop()
         if known is None or known.mac != mac:
             LOGGER.info(
                 "%s: learned host %s (%s -> %s) on port %d (from %s)",
@@ -1127,6 +1140,8 @@ class SdnController(app_manager.RyuApp):
         except Exception as exc:
             LOGGER.warning("no path %s -> %s: %s", src_switch, dst_switch, exc)
             return None
+        import sys as _sys
+        print(f"_program_path path={path}", file=_sys.stderr)
 
         out_ports: List[int] = []
         installed = 0
@@ -1174,6 +1189,19 @@ class SdnController(app_manager.RyuApp):
                 "installed %d rule(s) for %s along shortest path %s",
                 installed, dst_mac, " -> ".join(path),
             )
+            flow_key = f"{src_switch}->{dst_switch}:{dst_mac}"
+            flow_path = tuple(path)
+            if self.reroute is not None:
+                self.reroute.register(flow_key, flow_path)
+            else:
+                # Loop not up yet (fabric still coming up): queue it; the
+                # replay in _maybe_start_reroute_loop registers it once the
+                # loop runs.
+                pending = getattr(self, "_pending_flows", None)
+                if pending is None:
+                    pending = []
+                    self._pending_flows = pending
+                pending.append((flow_key, flow_path))
             self.event_log.emit(
                 "path_installed",
                 src=src_switch, dst=dst_switch, eth_dst=dst_mac,

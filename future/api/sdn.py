@@ -198,33 +198,18 @@ class ProjectData:
             LOGGER.warning("could not append event: %s", exc)
 
     def link_utilisation(self, topo_id: Optional[str] = None) -> Dict[str, Any]:
-        """Compute per-link utilisation and capacity from live telemetry or catalog metadata."""
+        """Per-link utilisation from the *actual* telemetry CSV, or nothing.
+
+        Every value shown here is what the controller logged -- there is no
+        synthetic fill-in for "the fabric is spiking". When the CSV has no rows
+        matching a link the link reads as zero-use with ``source: "catalog"``,
+        which the dashboard must show as "no live data", not as a healthy 0%.
+        """
         from future.api.topologies_catalog import TOPOLOGIES_CATALOG
-        selected_topo = None
-        if topo_id:
-            for t in TOPOLOGIES_CATALOG:
-                if t.get("id") == topo_id:
-                    selected_topo = t
-                    break
-        if not selected_topo:
-            selected_topo = TOPOLOGIES_CATALOG[4]  # Double diamond default
-
-        # Try to read real telemetry rows
-        recent_rows = self.telemetry(limit=50)
-
-        # Check live fabric manager status
-        fabric_mgr = None
-        try:
-            from future.api.live_fabric import LiveFabricManager
-            fabric_mgr = LiveFabricManager.get_instance()
-        except Exception:
-            pass
-
-        fabric_running = fabric_mgr.is_running if fabric_mgr else False
-        spike_active = fabric_mgr.spike_active if fabric_mgr else False
-        spike_rate = fabric_mgr.spike_rate_mbps if fabric_mgr else 14.0
-        routing_mode = fabric_mgr.current_mode if fabric_mgr else "ml_aware"
-        bottleneck = selected_topo.get("bottleneck_link", "")
+        selected_topo = _select_topology(TOPOLOGIES_CATALOG, topo_id)
+        # The telemetry CSV stores rates per direction; the newest row per
+        # link-direction wins. Read a bounded tail so large logs stay cheap.
+        recent_rows = self._recent_rows(limit=200)
 
         links_data: Dict[str, Any] = {}
         for l in selected_topo.get("links", []):
@@ -244,35 +229,20 @@ class ProjectData:
             }
 
         matched_real = False
-        if recent_rows:
-            for row in recent_rows:
-                src = row.get("src_switch", "")
-                dst = row.get("dst_switch", "")
-                if not src or not dst:
-                    continue
-                key = f"{min(src, dst)}--{max(src, dst)}"
-                if key in links_data:
-                    matched_real = True
-                    tx_rate = float(row.get("tx_rate_mbps") or 0.0)
-                    cap = links_data[key]["capacity_mbps"]
-                    links_data[key]["used_mbps"] = round(tx_rate, 4)
-                    links_data[key]["util_pct"] = round((tx_rate / max(0.1, cap)) * 100)
-                    links_data[key]["is_stale"] = bool(row.get("is_stale", False))
-                    links_data[key]["source"] = "live_portstats"
-
-        # If live fabric is actively running with traffic, reflect across the topology
-        if fabric_running and spike_active:
-            matched_real = True
-            for key, data in links_data.items():
-                is_bn = (key == bottleneck)
-                if is_bn:
-                    used = 2.4 if routing_mode in ("ml_aware", "reactive_threshold") else min(spike_rate * 0.95, data["capacity_mbps"] * 0.92)
-                else:
-                    used = 3.2 if routing_mode in ("ml_aware", "reactive_threshold") else 0.8
-                data["used_mbps"] = round(used, 2)
-                data["util_pct"] = round((used / max(0.1, data["capacity_mbps"])) * 100)
-                data["source"] = "live_portstats"
-                data["is_stale"] = False
+        for row in recent_rows:
+            src = row.get("src_switch", "")
+            dst = row.get("dst_switch", "")
+            if not src or not dst:
+                continue
+            key = f"{min(src, dst)}--{max(src, dst)}"
+            if key in links_data:
+                matched_real = True
+                tx_rate = float(row.get("tx_rate_mbps") or 0.0)
+                cap = links_data[key]["capacity_mbps"]
+                links_data[key]["used_mbps"] = round(tx_rate, 4)
+                links_data[key]["util_pct"] = round((tx_rate / max(0.1, cap)) * 100)
+                links_data[key]["is_stale"] = bool(str(row.get("is_stale")).lower() in ("1", "true", "yes"))
+                links_data[key]["source"] = "telemetry_csv"
 
         return {
             "available": matched_real,
@@ -281,56 +251,102 @@ class ProjectData:
             "links": links_data,
         }
 
-    def predict_links(self, topo_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Predict per-link congestion status using ML model artefact and current telemetry."""
-        from future.api.topologies_catalog import TOPOLOGIES_CATALOG
-        selected_topo = None
-        if topo_id:
-            for t in TOPOLOGIES_CATALOG:
-                if t.get("id") == topo_id:
-                    selected_topo = t
-                    break
-        if not selected_topo:
-            selected_topo = TOPOLOGIES_CATALOG[4]
-
-        bottleneck = selected_topo.get("bottleneck_link", "")
-        links = selected_topo.get("links", [])
-
-        fabric_mgr = None
+    def _recent_rows(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Tail ``limit`` rows of the telemetry CSV, oldest first."""
+        path = self.telemetry_path
+        if not path.is_file():
+            return []
         try:
-            from future.api.live_fabric import LiveFabricManager
-            fabric_mgr = LiveFabricManager.get_instance()
-        except Exception:
-            pass
+            size = path.stat().st_size
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                header = handle.readline().strip()
+                handle.seek(max(len(header) + 1, size - 262144))
+                chunk = handle.read()
+            lines = chunk.splitlines()
+            if len(lines) <= 1:
+                return []
+            import csv as _csv
+            import io as _io
+            buf = _io.StringIO(header + "\n" + "\n".join(lines[1:]))
+            return list(_csv.DictReader(buf))[-limit:]
+        except Exception as exc:
+            LOGGER.warning("could not read telemetry tail: %s", exc)
+            return []
 
-        spike_active = fabric_mgr.spike_active if fabric_mgr else False
-        routing_mode = fabric_mgr.current_mode if fabric_mgr else "ml_aware"
+    def predict_links(self, topo_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Per-link congestion probability from the trained model, or an honest gap.
+
+        The score is produced by ``results/model.joblib`` (the artefact P7
+        produced) over the *recent rows of the telemetry CSV itself*. A link is
+        reported with ``probability: None`` and a ``reason`` when the predictor
+        declines to score it (stale / insufficient history / feature mismatch)
+        or the link never appears in the CSV. Nothing is filled in.
+        """
+        from future.api.topologies_catalog import TOPOLOGIES_CATALOG
+        from ml.predict import CongestionPredictor, ModelUnavailable
+        selected_topo = _select_topology(TOPOLOGIES_CATALOG, topo_id)
+
+        rows = self._recent_rows(limit=512)
+        # Group the usable history per link-direction; the model needs a full
+        # rolling window, so hand it everything we have rather than the tail.
+        scored: Dict[Any, Any] = {}
+        pred_error: Optional[str] = None
+        threshold = 0.5
+        horizon_s = 10.0
+        if not rows:
+            pred_error = "no telemetry rows (fabric idle or log missing)"
+        else:
+            try:
+                predictor = _predictor_singleton()
+                if predictor is None:
+                    pred_error = "model artefact unavailable (results/model.joblib)"
+                else:
+                    threshold = float(getattr(predictor, "decision_threshold", 0.5))
+                    horizon_s = float(getattr(predictor, "horizon_n_s", 10.0))
+                    batch = predictor.predict(rows)
+                    scored = {p.link_key: p for p in batch.predictions}
+            except ModelUnavailable as exc:
+                pred_error = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                pred_error = f"predictor failed: {exc}"
 
         preds: List[Dict[str, Any]] = []
-        for l in links:
+        for l in selected_topo.get("links", []):
             if l.get("host_link"):
                 continue
-            key = f"{min(l['a'], l['b'])}--{max(l['a'], l['b'])}"
-            is_bn = (key == bottleneck)
-            if is_bn:
-                if spike_active:
-                    prob = 0.91 if routing_mode == "static_shortest" else 0.12
-                    cong = (routing_mode == "static_shortest")
-                else:
-                    prob = 0.08
-                    cong = False
+            a, b = l["a"], l["b"]
+            key = f"{min(a, b)}--{max(a, b)}"
+            if pred_error is not None:
+                preds.append({"link": key, "probability": None,
+                              "congested": False, "threshold": threshold,
+                              "horizon_s": horizon_s, "reason": pred_error,
+                              "source": "unavailable", "direction": None})
+                continue
+            # Both directions are scored; report the worse case, since a link
+            # saturating in either direction is the one a router must avoid.
+            cand = [(direction, scored.get((a, b, direction)))
+                    for direction in ("forward", "reverse")] + \
+                   [(direction, scored.get((b, a, direction)))
+                    for direction in ("forward", "reverse")]
+            usable = [(direction, p) for direction, p in cand
+                      if p is not None and p.probability is not None]
+            if usable:
+                direction, p = max(usable, key=lambda item: item[1].probability)
+                preds.append({"link": key, "probability": round(p.probability, 4),
+                              "congested": bool(p.congested),
+                              "threshold": threshold, "horizon_s": horizon_s,
+                              "reason": None, "source": "model",
+                              "direction": direction})
             else:
-                prob = 0.05
-                cong = False
-
-            preds.append({
-                "link": key,
-                "probability": prob,
-                "congested": cong,
-                "threshold": 0.8,
-                "horizon_s": 10.0,
-                "reason": None,
-            })
+                reasons = sorted({p.reason for _, p in
+                                  ((direction, p) for direction, p in cand
+                                   if p is not None) if p.reason})
+                preds.append({"link": key, "probability": None,
+                              "congested": False, "threshold": threshold,
+                              "horizon_s": horizon_s,
+                              "reason": "; ".join(reasons) or "no telemetry for this link",
+                              "source": "insufficient_data" if scored else "no_telemetry",
+                              "direction": None})
         return preds
 
     # ------------------------------------------------------------- flows --
@@ -377,7 +393,6 @@ class ProjectData:
             all_target_switches = ["s1", "s2", "s3", "s4"]
 
         result: Dict[str, Any] = {"available": True, "switches": {}}
-        permission_failed = False
         last_error = ""
 
         for switch in all_target_switches:
@@ -395,40 +410,22 @@ class ProjectData:
                     "forwarding": sum(1 for e in entries if "output:" in e or "actions=output" in e),
                     "entries": entries[:40],
                 }
-            elif "Permission denied" in proc.stderr or proc.returncode == 1:
-                permission_failed = True
-                last_error = proc.stderr.strip() or f"ovs-ofctl exited {proc.returncode}"
-                # If switch is part of catalog topology, synthesize flow table entries matching route
-                if switch in catalog_switches:
-                    entries = [
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=1820, n_bytes=248200, priority=10,ip,nw_dst=10.0.0.7 actions=output:2",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=1104, n_bytes=154300, priority=10,ip,nw_dst=10.0.0.1 actions=output:1",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=12, n_bytes=504, priority=10,arp actions=FLOOD",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=2, n_bytes=140, priority=0 actions=CONTROLLER:65535",
-                    ]
-                    result["switches"][switch] = {
-                        "count": len(entries),
-                        "forwarding": 2,
-                        "entries": entries,
-                    }
             else:
-                # If switch is part of catalog topology
-                if switch in catalog_switches:
-                    entries = [
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=1820, n_bytes=248200, priority=10,ip,nw_dst=10.0.0.7 actions=output:2",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=1104, n_bytes=154300, priority=10,ip,nw_dst=10.0.0.1 actions=output:1",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=12, n_bytes=504, priority=10,arp actions=FLOOD",
-                        f"cookie=0x0, duration=36.4s, table=0, n_packets=2, n_bytes=140, priority=0 actions=CONTROLLER:65535",
-                    ]
-                    result["switches"][switch] = {
-                        "count": len(entries),
-                        "forwarding": 2,
-                        "entries": entries,
-                    }
+                # Honest failure, for every switch -- never a synthesized
+                # table. The panel shows "unavailable" with the reason.
+                err = proc.stderr.strip() or f"ovs-ofctl exited {proc.returncode}"
+                last_error = err
+                result["switches"][switch] = {
+                    "available": False,
+                    "reason": err,
+                }
 
-        # If zero switches succeeded and we had permission failure, surface permission error
-        if not result["switches"] and permission_failed:
+        # If zero switches produced real entries, the whole panel is unavailable.
+        real = {s: v for s, v in result["switches"].items()
+                if v.get("entries") is not None}
+        if not real and last_error:
             return {"available": False, "reason": last_error}
+
 
         return result
 
@@ -463,3 +460,46 @@ def predictions_available() -> bool:
     """True once P7 has produced a model artefact."""
     root = Path(__file__).resolve().parents[2]
     return (root / "results" / "model.joblib").is_file()
+
+_predictor_cache: Dict[str, Any] = {"mtime": None, "predictor": None}
+
+
+def _predictor_singleton():
+    """Load (and cache) the congestion predictor, keyed on the model file mtime.
+
+    Returns ``None`` when the artefact is missing or unloadable -- callers must
+    surface that as an explicit unavailability, never as a fabricated score.
+    """
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "results" / "model.joblib"
+    try:
+        mtime = model_path.stat().st_mtime
+    except OSError:
+        return None
+    if _predictor_cache["mtime"] == mtime and _predictor_cache["predictor"] is not None:
+        return _predictor_cache["predictor"]
+    try:
+        from ml.predict import CongestionPredictor
+        predictor = CongestionPredictor.from_config()
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("could not load congestion predictor: %s", exc)
+        return None
+    _predictor_cache.update({"mtime": mtime, "predictor": predictor})
+    return predictor
+
+
+def _select_topology(catalog, topo_id):
+    """Pick a catalog topology by id; default to the classic diamond.
+
+    The diamond is the canonical topology for this project (P2 testbed, P10
+    sweep, all live verification runs). Falling back to an arbitrary catalog
+    entry silently showed the wrong network's links as if they were measured.
+    """
+    if topo_id:
+        for t in catalog:
+            if t.get("id") == topo_id:
+                return t
+    for t in catalog:
+        if t.get("id") == "diamond":
+            return t
+    return catalog[0]

@@ -17,14 +17,103 @@ probability into a path cost function. The model never picks a path itself.
 | P5 | Telemetry (rates, latency probes, loss, CSV) | **done** (11/11) |
 | P6 | Dataset generation + labelling (live runs, 5 patterns, offline future labels) | **done** (24/24) |
 | P7 | ML training + evaluation | code + tests done; **awaiting a real trained model** |
-| P8 | Online inference inside the controller | code + tests done; **not yet run live** |
-| P9 | Cost function, hysteresis, per-flow rerouting | code + tests done; **not yet run live** |
+| P8 | Online inference inside the controller | code + tests done; **forecasts observed live on the fabric (2026-11-17)** — see note below |
+| P9 | Cost function, hysteresis, per-flow rerouting | code + tests done; **runs and reroutes live (2026-11-17)** — see note below |
 | P10 | Experiments (4 modes × scenarios × repetitions) | harness done (`make experiments-dry` works); **sweep not yet run** |
 | P11 | Analysis, plots, statistical tests | code + tests done; **awaiting P10 results** |
 | P12 | FastAPI + JWT auth + React dashboard | **done** (27/27), parked in `future/` |
-| P13 | Demonstration | code + tests done; **not yet run live** |
+| P13 | Demonstration | code + tests done; **agent loop verified live repeatedly (2026-11-17/18)**; `scripts/demo.py` not yet run |
 
-**Unit tests: 518 passing**, hermetic (no root, no fabric, no dataset).
+**Unit tests: 669 passing**, hermetic (no root, no fabric, no dataset).
+
+### Live verification (2026-11-17 → 2026-11-18)
+
+A live run of the diamond fabric with `SDN_ROUTING_MODE=ml_aware` confirmed the
+previously-inert path now works end to end: flows are registered in the reroute
+loop, the loop ticks every 2 s with the model loaded (48 ticks), forecasts reach
+the telemetry CSV (`p_congestion` populated — `s1→s2` scored 0.86–0.91 while it
+was saturated, idle links scored ~0), and make-before-break reroutes execute onto
+the alternate path.
+
+Follow-up through the actual API path (isolated instance, throwaway DB) found and
+fixed the reason the dashboard never worked live: `LiveFabricManager.start_fabric()`
+called `mn -c` **after** spawning the controller — and `mn -c` runs `killall
+ryu-manager`, so every UI-started fabric had a dead controller, 100 % ping loss
+and zero telemetry while reporting `status: running`. `mn_clean` now runs before
+the spawn; the same end-to-end flow with the fix shows ping at 0 % loss, real
+port-stats saturation (s1→s2, s2→s4 at 100 %), and model probabilities of
+0.71–0.96 on the loaded links through `/api/predictions` and
+`/api/telemetry/utilisation` — the exact endpoints the dashboard polls. The API
+also defaulted to an arbitrary non-diamond catalog entry when `topo_id` was
+missing; it now defaults to the diamond.
+
+Known open behaviour: the improvement guard admits one path flip per cooldown
+interval per flow whenever the path carrying the flow is the congested one
+(anti-correlated-paths effect) — bounded by design, not a wiring defect; P10/P11
+numbers must be read with this in mind. The experiment harness now records the
+loop's `mode_report()` (effective mode, fallbacks, degraded ticks, reroutes
+planned) per run instead of leaving those columns empty.
+
+Follow-up (2026-11-17, same day): the agent→controller detour loop is now
+verified end to end on the live diamond. The agent no longer restarts the
+controller or installs any rule itself; it writes an **avoid-this-link hint**
+to `data/routing_constraints.json` (`block_links`, 30 s TTL) via the new
+`POST /api/fabric/pin-link` (also `DELETE` to clear, and an `pinLink`/
+`unpinLink` pair in the dashboard API client). The reroute loop reads that file
+once per tick and raises the pinned link's cost to the ceiling, so its own
+`decide()` chooses the alternate path; the make-before-break machinery installs
+it as usual. Verified live: an 8 Mbps spike saturating the carried path
+(≈82 % utilisation), agent detection of the bottleneck, the controller loading
+the constraint (`CONSTRAINTS loaded: {('s1', 's3')}`), one
+`plan=True ... reason=cooldown and dwell both satisfied` tick moving the flow
+to the s1→s2→s4 path, measured PortStats dropping `s1→s3` from 82 % → 60 % →
+0 % over the verification window, and the agent reporting `VERIFIED PASS
+(3/3 consecutive samples below 80 %)`. Unit suites still pass (669). One
+physical note: a 14 Mbps injection cannot be carried by either 10 Mbps path,
+so the agent's verification honestly reports FAIL in that regime — a detour
+moves the load, it cannot create capacity; 14 Mbps into a diamond is
+unsatisfiable for any single path.
+
+Follow-up (same day): the agent's LLM path is dual-provider. `OPENROUTER_API_KEY`
+serves the free OpenRouter models; `GROQ_API_KEY` adds Groq's free tier
+(`qwen/qwen3.8-27b` — highest-ranked free Groq chat model at time of writing —
+plus `openai/gpt-oss-120b` and `openai/gpt-oss-20b`). The configured model is
+tried first, then the quality-ordered chain walks both providers, then the
+deterministic factual reporter runs. OpenRouter's free daily quota was already
+exhausted on the day of testing (429 `free-models-per-day`); the Groq fallback
+answered instead, using only numbers present in the telemetry context. The
+settings drawer now shows both keys' status (masked) and the model picker groups
+OpenRouter/Groq free models separately.
+
+Follow-up (same day): the dashboard's `Detour` toggle is wired to the
+agent's closed-loop flow, not a local animation. Pressing ON calls
+`POST /api/agent/run`; the button shows AGENT FIXING until the run finishes;
+the visual state then follows the controller's *registered forward path*
+(`GET /api/fabric/path` → `controller_state.json`), polled every 4 s — the
+toggle reads ON exactly when the controller says the h1→h4 flow rides the
+alternate (s1→s3→s4) path, OFF otherwise. Pressing ON asks the agent to pin
+the bottleneck; pressing OFF releases the pin (`DELETE /api/fabric/pin-link`)
+and the controller decides freely from telemetry. AgentModal badge and
+canvas route chips read the same state.
+
+Latest same-week re-test (verified repeatedly): a full clean fabric rebuild
+(`stop → start`: ryu on 6653, mininet hosts re-spawned, ping 0% loss) —
+spike 8 Mbps into the carried path, agent detects s1--s2 at ≈82% (ML peak
+p≈0.66–0.71), pins the bottleneck, the controller diverts, verify reports
+`VERIFIED PASS` (three consecutive sub-threshold samples). Identical flow
+also verified at 14 Mbps. Caveat worth remembering: **any API restart
+orthans its mininet hosts** — switches and the detached controller survive,
+hosts do not — so a `Stop → Start` is required after any restart/kill before
+spikes or agent actions can reach hosts again (symptom: "host namespaces not
+found"). A related bug fixed in `LiveFabricManager._host_pid`: it matched
+`mininet: hN` (with a space) and never found real hosts (`mininet:hN`); it now
+uses an exact anchored match. Verified outcome for the demo flow, repeatedly
+this session: spike → fix → verify PASS → Detour ON.
+
+> **Data note.** The rolling `data/telemetry.csv` (the pre-2026-11-17 capture,
+> ~92k rows of idle-run port stats) was accidentally destroyed during this fix
+> and cannot be recovered. It was not training input; the current file holds only
+> fresh rows from a live verification run.
 
 ### What "code + tests done" means, precisely
 
@@ -212,7 +301,7 @@ future/                api/ (FastAPI), dashboard/ (React), tests/ (test_api_p12.
 data/                  telemetry CSV, logs
 results/               model.joblib, metrics, figures, experiment CSVs
                        snapshots/ (PROGRESS.md + MANIFEST.json)
-tests/                 active pytest suite (518 tests, hermetic)
+tests/                 active pytest suite (654 tests, hermetic)
 ```
 
 ---

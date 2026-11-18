@@ -134,7 +134,7 @@ def test_new_rules_outrank_old_rules() -> None:
     plan = build_reroute_plan("f1", PATH_A, PATH_B, {"flow": "f1"}, base_priority=100)
     for op in plan.operations:
         if op.is_install:
-            assert op.priority == 99
+            assert op.priority == 101  # new path must outrank the old while both match
         else:
             assert op.priority == 100
 

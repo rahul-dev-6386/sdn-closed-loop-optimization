@@ -81,6 +81,20 @@ export interface LiveTelemetryRow {
   tx_rate_mbps?: string
 }
 
+export interface FabricPathResponse {
+  status: 'ok' | 'unavailable'
+  reason?: string
+  age_s?: number
+  mode?: string
+  n_links?: number
+  graph?: Record<string, string[]>
+  flows?: Array<{ flow?: string; path?: string[] }>
+  flow?: string | null
+  path: string[]
+  constraints?: string[]
+  state_path?: string
+}
+
 export interface FabricStatus {
   fabric_running: boolean
   routing_mode: string
@@ -261,16 +275,34 @@ export const api = {
     ),
   status: (signal?: AbortSignal) => request<Status>('/api/status', { signal }),
   events: (limit = 100, signal?: AbortSignal) => request<SdnEvent[]>(`/api/events?limit=${limit}`, { signal }),
-  predictions: (signal?: AbortSignal) =>
+  predictions: (topo_id?: string, signal?: AbortSignal) =>
     request<{
       available: boolean
       reason?: string
-      links: { link: string; probability?: number; congested?: boolean; reason?: string }[]
-    }>('/api/predictions', { signal }),
+      links: {
+        link: string
+        probability?: number | null
+        congested?: boolean | null
+        reason?: string | null
+        source?: string
+        direction?: string | null
+      }[]
+    }>(`/api/predictions${topo_id ? `?topo_id=${encodeURIComponent(topo_id)}` : ''}`, { signal }),
+  fabricPath: () => request<FabricPathResponse>('/api/fabric/path'),
   fabricStatus: (signal?: AbortSignal) => request<FabricStatus>('/api/fabric/status', { signal }),
   startFabric: (mode = 'ml_aware') =>
     request<{ status: string }>('/api/fabric/start', { method: 'POST', body: { mode } }),
   stopFabric: () => request<{ status: string }>('/api/fabric/stop', { method: 'POST' }),
+  pinLink: (link: string, seconds = 30) =>
+    request<{ status: string; link: string; seconds: number }>(
+      '/api/fabric/pin-link',
+      { method: 'POST', body: { link, seconds } },
+    ),
+  unpinLink: () =>
+    request<{ status: string; link: string | null; seconds: number }>(
+      '/api/fabric/pin-link',
+      { method: 'DELETE' },
+    ),
   startSpike: (rate_mbps = 14.0, duration_s = 45.0) =>
     request<{ status: string }>('/api/traffic/spike', {
       method: 'POST',
@@ -388,7 +420,10 @@ export interface AgentConfigData {
     id: string
     name: string
     context: number
+    provider?: string
   }>
+  has_groq_api_key?: boolean
+  groq_masked_key?: string
   congestion_threshold_pct: number
 }
 

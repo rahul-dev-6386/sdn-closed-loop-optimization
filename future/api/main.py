@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -439,12 +440,16 @@ def get_predictions(request: Request, topo_id: Optional[str] = Query(None)) -> D
         }
     assert state.project is not None
     links_preds = state.project.predict_links(topo_id=topo_id)
+    threshold = links_preds[0].get("threshold", 0.5) if links_preds else 0.5
+    horizon_s = links_preds[0].get("horizon_s", 10.0) if links_preds else 10.0
+    model_loaded = any(l.get("source") == "model" for l in links_preds) \
+        or predictions_available()
     return {
-        "available": True,
+        "available": predictions_available(),
         "links": links_preds,
-        "model_loaded": True,
-        "threshold": 0.8,
-        "horizon_s": 10.0,
+        "model_loaded": model_loaded,
+        "threshold": threshold,
+        "horizon_s": horizon_s,
     }
 
 
@@ -488,11 +493,18 @@ def fabric_status() -> Dict[str, Any]:
     return LiveFabricManager.get_instance().get_status()
 
 
+class FabricModeRequest(BaseModel):
+    mode: str = Field(
+        "ml_aware",
+        pattern=r"^(ml_aware|static_shortest|reactive_threshold|ecmp)$",
+    )
+
+
 @app.post("/api/fabric/start")
-def fabric_start(mode: str = "ml_aware") -> Dict[str, Any]:
+def fabric_start(payload: FabricModeRequest = Body(default_factory=FabricModeRequest)) -> Dict[str, Any]:
     """Start live Mininet fabric and Ryu controller."""
     from future.api.live_fabric import LiveFabricManager
-    return LiveFabricManager.get_instance().start_fabric(mode=mode)
+    return LiveFabricManager.get_instance().start_fabric(mode=payload.mode)
 
 
 @app.post("/api/fabric/stop")
@@ -500,6 +512,93 @@ def fabric_stop() -> Dict[str, Any]:
     """Stop live Mininet fabric and Ryu controller."""
     from future.api.live_fabric import LiveFabricManager
     return LiveFabricManager.get_instance().stop_fabric()
+
+
+class PinLinkPayload(BaseModel):
+    link: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    seconds: int = Field(30, ge=1, le=3600)
+
+
+@app.post("/api/fabric/pin-link")
+def pin_link(payload: PinLinkPayload, request: Request) -> Dict[str, Any]:
+    """Pin (penalize) an inter-switch link so the Ryu decision loop avoids it.
+
+    The controller reads the constraint file on its next telemetry ticks and
+    changes its own path selection. This is the explicit agent -> controller
+    seam: the agent *reports* the problem; the controller *decides* the fix.
+    """
+    user_from_header(request)
+    from controller.constraints import write_constraints, DEFAULT_CONSTRAINTS_PATH
+    link = str(payload.link).strip()
+    if "--" not in link:
+        raise HTTPException(status_code=422, detail="link must be in 's1--s2' form")
+    res = write_constraints(
+        DEFAULT_CONSTRAINTS_PATH,
+        block_links=[link],
+        ttl_s=float(payload.seconds),
+        reason="agent-requested avoidance",
+        pinned_by="agent",
+    )
+    return {"status": "pinned", "link": link, "seconds": payload.seconds,
+            "valid_until_epoch": res.get("valid_until_epoch")}
+
+
+@app.delete("/api/fabric/pin-link")
+def unpin_link(request: Request) -> Dict[str, Any]:
+    """Clear any active link constraint."""
+    user_from_header(request)
+    from controller.constraints import clear_constraints, DEFAULT_CONSTRAINTS_PATH
+    res = clear_constraints(DEFAULT_CONSTRAINTS_PATH)
+    return {"status": "unpinned", "link": None, "seconds": 0,
+            "reason": res.get("reason", "")}
+
+
+@app.get("/api/fabric/path")
+def fabric_path(request: Request) -> Dict[str, Any]:
+    """The controller's registered path for the service flow.
+
+    Reads the controller's per-tick state snapshot (``controller_state.json``),
+    which records which path each registered flow rides. Lets the dashboard
+    render the *actual* datapath instead of an animated stand-in.
+
+    Returns ``status: "unavailable"`` when the snapshot is missing or stale
+    (fabric down / controller not ticking).
+    """
+    user_from_header(request)
+    from controller.reroute_integration import (
+        STATE_ENV_VAR, STATE_STALE_AFTER_S, CONTROLLER_STATE_PATH)
+    state_path = os.path.abspath(os.environ.get(STATE_ENV_VAR) or CONTROLLER_STATE_PATH)
+    try:
+        with open(state_path, "r", encoding="utf-8") as handle:
+            snap = json.load(handle)
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "controller is not reporting topology state",
+                "state_path": state_path}
+    except Exception as exc:
+        return {"status": "unavailable", "reason": f"controller state unreadable: {exc}",
+                "state_path": state_path}
+
+    ts = float(snap.get("ts") or 0.0)
+    age_s = time.time() - ts if ts else None
+    if age_s is None or age_s > STATE_STALE_AFTER_S:
+        return {"status": "unavailable",
+                "reason": f"controller state stale ({'never' if age_s is None else f'{age_s:.0f}s'} old)",
+                "age_s": age_s, "state_path": state_path}
+
+    flows = snap.get("flows") or []
+    forward = next((f for f in flows if f.get("path")), None) or {}
+    path = forward.get("path") or []
+    return {
+        "status": "ok",
+        "age_s": round(age_s, 2),
+        "mode": snap.get("mode"),
+        "n_links": int(snap.get("n_links") or 0),
+        "graph": snap.get("graph") or {},
+        "flows": flows,
+        "flow": forward.get("flow"),
+        "path": list(path) if isinstance(path, list) else [],
+        "constraints": (snap.get("constraints") or {}).get("block_links") or [],
+    }
 
 
 @app.post("/api/traffic/spike")
@@ -815,41 +914,53 @@ async def chat_with_agent(payload: AgentChatRequest, request: Request) -> Dict[s
     bottleneck = topo_def.get("bottleneck_link", "s1--s2") if topo_def else "s1--s2"
 
     if any(k in lower for k in fix_keywords):
-        # Trigger full LangGraph autonomous mitigation workflow
-        run_state = dict(_latest_agent_state)
-        run_state["congestion_detected"] = True
-        run_state["bottleneck_link"] = bottleneck
-        run_state["topology_id"] = topo_id
+        # Trigger full LangGraph autonomous mitigation workflow on REAL measured state
+        run_state = create_initial_state(
+            task=msg,
+            topology_id=topo_id,
+        )
+        run_state["messages"] = list(history)
         res = await graph.run(run_state)
         _latest_agent_state = res
         return _latest_agent_state
 
     if any(k in lower for k in create_keywords):
         spike_res = graph.tools.inject_congestion(topo_id, 14.0)
-        assistant_msg = (
-            f"Traffic spike of **14.0 Mbps** has been injected on bottleneck link **`{bottleneck}`**.\n\n"
-            f"- Link load surged to **88.0%** (exceeding 80% hazard threshold).\n"
-            f"- ML Congestion Hazard probability: **0.91**.\n"
-            f"- Detour reroute: **DISABLED** (primary shortest path).\n\n"
-            f"The network is now under active congestion pressure. Click **Fix Congestion** or ask me to resolve it."
-        )
+        if spike_res.get("status") == "spike_started":
+            _latest_agent_state["congestion_detected"] = True
+            assistant_msg = (
+                f"**Real traffic spike started.** 14.0 Mbps UDP h1→h4 for "
+                f"{int(spike_res.get('duration_s', 45))}s on the live fabric.\n\n"
+                f"- Telemetry will report the load within ~2 s (port-stats deltas).\n"
+                f"- The model will score the loaded links within ~24 s of telemetry.\n"
+                f"- Click **Fix Congestion** (or ask me) to watch the controller react.\n\n"
+                f"I will not claim numbers I have not measured."
+            )
+        else:
+            _latest_agent_state["congestion_detected"] = False
+            assistant_msg = (
+                f"**Could not inject congestion.** {spike_res.get('reason', spike_res)}\n\n"
+                f"Start the fabric first (Start Fabric button), then ask again."
+            )
         history.append({"role": "assistant", "content": assistant_msg, "time": time.strftime("%H:%M:%S")})
         _latest_agent_state["messages"] = history
-        _latest_agent_state["congestion_detected"] = True
         _latest_agent_state["bottleneck_link"] = bottleneck
-        _latest_agent_state["status"] = "congested"
+        _latest_agent_state["status"] = "congested" if spike_res.get("status") == "spike_started" else "unavailable"
         _latest_agent_state["network_state"] = spike_res
         return _latest_agent_state
 
-    # General inspection / Q&A: gather telemetry context and query LLM
+    # General inspection / Q&A: gather measured telemetry context and query LLM
     telem = graph.tools.inspect_telemetry(topo_id)
     preds = graph.tools.inspect_ml_predictions(topo_id)
     context = {
         "topology_id": topo_id,
         "bottleneck": telem.get("bottleneck", bottleneck),
-        "bottleneck_util_pct": telem.get("bottleneck_util_pct", 88.0),
-        "ml_probability": preds.get("probability", 0.91),
-        "congested": telem.get("is_congested", True),
+        "bottleneck_util_pct": telem.get("bottleneck_util_pct"),
+        "ml_probability": preds.get("probability"),
+        "congested": telem.get("is_congested", False),
+        "telemetry_status": telem.get("status"),
+        "telemetry_reason": telem.get("reason"),
+        "ml_summary": preds.get("summary"),
     }
 
     resp = await llm_client.generate_response(msg, context)
@@ -879,19 +990,26 @@ def agent_create_congestion(payload: AgentCongestionRequest, request: Request) -
         "content": f"Inject {rate} Mbps traffic spike on {topo_id}",
         "time": now_str,
     })
-    assistant_msg = (
-        f"Traffic spike of **{rate} Mbps** has been injected on bottleneck link **`{bottleneck}`**.\n\n"
-        f"- Link load surged to **88.0%** (exceeding 80% hazard threshold).\n"
-        f"- ML Congestion Hazard probability: **0.91**.\n"
-        f"- Detour reroute: **DISABLED** (primary shortest path).\n\n"
-        f"The network is now under active congestion pressure. Click **Fix Congestion** or ask me to resolve it."
-    )
+    if res.get("status") == "spike_started":
+        _latest_agent_state["congestion_detected"] = True
+        assistant_msg = (
+            f"**Real traffic spike started.** {rate} Mbps UDP h1→h4 for "
+            f"{int(res.get('duration_s', 45))}s on the live fabric.\n\n"
+            f"- Telemetry reports the load within ~2 s (port-stats deltas).\n"
+            f"- The model scores the loaded links after ~24 s of telemetry.\n"
+            f"- Click **Fix Congestion** when you want the controller to mitigate it."
+        )
+    else:
+        _latest_agent_state["congestion_detected"] = False
+        assistant_msg = (
+            f"**Injection failed.** {res.get('reason', res)}\n\n"
+            f"Start the fabric first (Start Fabric button), then ask again."
+        )
     history.append({"role": "assistant", "content": assistant_msg, "time": now_str})
 
     _latest_agent_state["messages"] = history
-    _latest_agent_state["congestion_detected"] = True
     _latest_agent_state["bottleneck_link"] = bottleneck
-    _latest_agent_state["status"] = "congested"
+    _latest_agent_state["status"] = "congested" if res.get("status") == "spike_started" else "unavailable"
     _latest_agent_state["topology_id"] = topo_id
     _latest_agent_state["network_state"] = res
     return _latest_agent_state
@@ -911,8 +1029,6 @@ async def run_agent_workflow(payload: AgentRunRequest, request: Request) -> Dict
         task=f"Autonomous Closed-Loop Congestion Control on {topo_id}",
         topology_id=topo_id,
     )
-    init_state["congestion_detected"] = True
-    init_state["bottleneck_link"] = bottleneck
 
     result = await graph.run(init_state)
     _latest_agent_state = result

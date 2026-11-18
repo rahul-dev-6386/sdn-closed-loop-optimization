@@ -200,14 +200,18 @@ def build_reroute_plan(
     match: Dict[str, Any],
     base_priority: int = 100,
     make_before_break: bool = True,
+    new_priority: Optional[int] = None,
 ) -> ReroutePlan:
     """Build the ordered operations to move ``flow`` from ``old_path`` to ``new_path``.
 
     Parameters
     ----------
     base_priority:
-        Priority of the existing rules. New rules are installed at
-        ``base_priority - 1`` so they take precedence while both paths match.
+        Priority of the existing rules.
+    new_priority:
+        Priority of the new detour rules. Defaults to ``base_priority + 1``
+        so new rules take precedence in OpenFlow table matching while both match.
+        Can be alternated across reroutes to avoid flow-entry overwrite collisions.
 
     Raises
     ------
@@ -223,21 +227,23 @@ def build_reroute_plan(
                 f"{label} must contain at least two switches, got {path}"
             )
 
-    new_priority = base_priority - 1
+    if new_priority is None:
+        new_priority = base_priority + 1
     # (kind, switch, priority, phase) in make-before-break order. The sequence
     # number is assigned when the Operation is constructed -- Operation is frozen,
     # so assigning it afterwards would raise.
     steps: List[Tuple[str, str, int, str]] = []
 
     # Phase 1 -- prepare: install the whole new path, ingress and egress.
-    # Ingress first so each switch is forwarding before the next is touched.
+    # Ingress is touched last in reverse-topological order so all downstream
+    # forwarding rules are active before ingress steering takes effect.
     steps += [("install_ingress", sw, new_priority, "prepare")
               for sw in new_path[:-1]]
     steps += [("install_egress", sw, new_priority, "prepare")
               for sw in new_path[1:]]
 
-    # Phase 2 -- commit: remove the old ingress, one switch at a time. This is
-    # the moment the flow actually changes path.
+    # Phase 2 -- commit: remove old ingress rules shadowed by higher priority.
+    # OpenFlow matches highest-priority (base+1); removing base cleans up the table.
     steps += [("delete_ingress", sw, base_priority, "commit")
               for sw in old_path[:-1]]
 
@@ -273,7 +279,7 @@ def build_rollback_plan(plan: ReroutePlan, base_priority: int = 100) -> RerouteP
     steps += [("delete_ingress", sw, "commit") for sw in plan.new_path[:-1]]
     steps += [("delete_egress", sw, "cleanup") for sw in plan.new_path[1:]]
     operations = [
-        Operation(kind, switch, {}, base_priority - 1, phase, index)
+        Operation(kind, switch, {}, base_priority + 1, phase, index)
         for index, (kind, switch, phase) in enumerate(steps)
     ]
     return ReroutePlan(
@@ -460,6 +466,18 @@ class RerouteController:
             self._record(flow, current, None, "no usable candidate", t)
             return None
 
+        import os as _os, sys as _sys
+        if _os.environ.get("SDN_DEBUG_REROUTE"):
+            for k, v in metrics.items():
+                try:
+                    print(f"   {k} util={v.utilization:.4f} lat={v.latency_ms:.2f} loss={v.loss_pct:.2f} p={v.p_congestion:.4f}", file=_sys.stderr)
+                except Exception:
+                    print(f"   {k} <unprintable>", file=_sys.stderr)
+                print(f"METRICS flow={flow} current_path={list(current)}", file=_sys.stderr)
+        if _os.environ.get("SDN_DEBUG_REROUTE"):
+            for p in candidates:
+                print(f"CANDIDATE {list(p)} links={switch_path_to_links(p, list(metrics))}", file=_sys.stderr)
+            print(f"CURRENT {list(current)} links={switch_path_to_links(current, list(metrics))} metrics_keys={sorted(metrics.keys())}", file=_sys.stderr)
         current_links = switch_path_to_links(current, list(metrics))
         try:
             choice = choose_path(

@@ -63,7 +63,8 @@ export function PipelineStepModal({
             { label: 'Ingress Port Stats', value: 'OpenFlow 1.3 OFPST_PORT counters' },
             { label: 'Monitored Link', value: bottleneckLink },
             { label: 'Measured Utilisation', value: `${currentUtilPct}% (${currentUsedMbps} Mbps)` },
-            { label: 'Buffer Loss Rate', value: isCongested ? '53.3% packet drops' : '0.0% packet drops' },
+            { label: 'Congestion Threshold', value: '80% utilisation / latency 40 ms / loss 2%' },
+            { label: 'Staleness Guard', value: 'Telemetry stale at >3× interval → shortest-path fallback (Rule 7)' },
           ],
         }
       case 'predict':
@@ -71,16 +72,16 @@ export function PipelineStepModal({
           title: 'Stage 2: Machine Learning Congestion Forecasting',
           icon: <Cpu size={20} className="modal-icon modal-icon--blue" />,
           summary: isCongested
-            ? 'Congestion predicted in 10s horizon (Probability: 0.91)'
-            : 'Link stable in 10s horizon (Probability: 0.08)',
+            ? 'ML hazard forecast fires for this link'
+            : 'ML hazard forecast clear for this link',
           status: isCongested ? 'High Probability Hazard' : 'Low Hazard State',
           statusType: isCongested ? 'danger' : 'success',
           details: [
-            { label: 'Model Architecture', value: 'RandomForestClassifier (100 estimators)' },
-            { label: 'Feature Window', value: '10s historical telemetry rolling window' },
-            { label: 'Forecast Horizon', value: '10 seconds forward anticipation' },
-            { label: 'Inference Latency', value: '1.4ms (within 50ms real-time budget)' },
-            { label: 'Confidence Score', value: isCongested ? '91.4% confidence' : '92.0% confidence' },
+            { label: 'Model Architecture', value: 'RandomForest vs LogisticRegression (see results/ml_metrics.json)' },
+            { label: 'Feature Window', value: '24 s rolling window (12 samples × 2 s)' },
+            { label: 'Forecast Horizon', value: '10 s forward anticipation' },
+            { label: 'Inference Latency', value: '≈2.8 ms measured (budget 50 ms)' },
+            { label: 'Decision Threshold', value: 'p ≥ 0.5 (decision_threshold, results/model.joblib)' },
           ],
         }
       case 'decide':
@@ -93,11 +94,11 @@ export function PipelineStepModal({
           status: isDetourActive ? 'Avoidance Detour Active' : 'Shortest Path Active',
           statusType: 'info',
           details: [
-            { label: 'Algorithm', value: 'Closed-Loop Multi-Metric Dijkstra' },
-            { label: 'Congestion Penalty', value: '500x penalty on saturated links' },
-            { label: 'Primary Path Cost', value: isCongested ? '72.4 (Congested)' : '14.0 (Optimal)' },
-            { label: 'Detour Path Cost', value: '38.2 (Selected)' },
-            { label: 'Hysteresis Margin', value: '15% margin to prevent route flapping' },
+            { label: 'Algorithm', value: 'K-shortest simple paths + cost function' },
+            { label: 'Cost Function', value: '0.25·util + 0.15·latency + 0.20·loss + 0.40·p_congestion' },
+            { label: 'Path Cost Aggregation', value: 'Max of link costs (worst link dominates)' },
+            { label: 'Reroute Guard', value: 'Alternative must be ≥15% cheaper (improvement ratio 0.85)' },
+            { label: 'Hysteresis', value: '10 s cooldown per flow · 8 s minimum dwell' },
           ],
         }
       case 'reroute':
@@ -106,15 +107,15 @@ export function PipelineStepModal({
         return {
           title: 'Stage 4: OpenFlow 1.3 Flow-Mod Installation',
           icon: <Zap size={20} className="modal-icon modal-icon--cyan" />,
-          summary: '2 Flow-Mod rules installed via Ryu controller in 18ms',
+          summary: 'Make-before-break flow programming on the alternate path',
           status: 'Make-Before-Break Installed',
           statusType: 'success',
           details: [
-            { label: 'OpenFlow Protocol', value: 'OpenFlow 1.3 (OFPFC_ADD / MODIFY)' },
-            { label: 'Flow Match', value: 'eth_type=0x0800, ip_proto=17 (UDP)' },
-            { label: 'Ingress Point', value: `Switch ${ingressSwitch} (detour port)` },
-            { label: 'Egress Convergence', value: `Switch ${egressSwitch} (output port)` },
-            { label: 'Execution Latency', value: '18 milliseconds total dispatch' },
+            { label: 'OpenFlow Protocol', value: 'OpenFlow 1.3 (OFPFC_ADD / DELETE)' },
+            { label: 'Flow Match', value: 'Exact-match: in_port + destination MAC per switch' },
+            { label: 'Ingress Point', value: `Switch ${ingressSwitch} (detour ingress)` },
+            { label: 'Egress Convergence', value: `Switch ${egressSwitch} (detour egress)` },
+            { label: 'Ordering', value: 'Installs land before deletes; rollback on failure' },
           ],
         }
       case 'verify':

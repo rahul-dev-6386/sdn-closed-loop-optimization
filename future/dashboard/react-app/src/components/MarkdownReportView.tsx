@@ -238,10 +238,10 @@ export function MarkdownReportView({ markdownText, provenanceFiles }: Props) {
           <span>Artifact Provenance &amp; Verification</span>
         </div>
         <p>
-          This document is generated strictly from empirical testbed logs:
+          This document is generated from recorded run artefacts:{' '}
           <code>{provenanceFiles?.experiments || 'results/experiments.csv (46 Mininet runs)'}</code>,{' '}
           <code>{provenanceFiles?.telemetry || 'data/telemetry_live_labeled.csv (12,180 rows)'}</code>, and{' '}
-          <code>{provenanceFiles?.model || 'results/ml_metrics.json'}</code>. No hypothetical values or unverified claims are included.
+          <code>{provenanceFiles?.model || 'results/ml_metrics.json'}</code>. Note: it does not cover the Abilene WAN figure on the Analytics page, which has no backing run records in this repository.
         </p>
       </div>
 

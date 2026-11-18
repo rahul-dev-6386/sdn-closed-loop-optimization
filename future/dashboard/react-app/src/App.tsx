@@ -93,7 +93,14 @@ export default function App() {
   const [prediction, setPrediction] = useState<{
     available: boolean
     reason?: string
-    links?: { link: string; probability?: number; congested?: boolean; reason?: string }[]
+    links?: {
+      link: string
+      probability?: number | null
+      congested?: boolean | null
+      reason?: string | null
+      source?: string
+      direction?: string | null
+    }[]
   } | null>(null)
   const [streamState, setStreamState] = useState<'connecting' | 'connected' | 'stale' | 'down'>('connecting')
   const [lastFrameEpoch, setLastFrameEpoch] = useState<number>(() => Math.floor(Date.now() / 1000))
@@ -169,13 +176,19 @@ export default function App() {
   const [selectedPipelineStage, setSelectedPipelineStage] = useState<PipelineStage | null>(null)
 
   // Active Topology
-  const [selectedTopoId, setSelectedTopoId] = useState<string>('double_diamond')
+  const [selectedTopoId, setSelectedTopoId] = useState<string>('diamond')
   const selectedTopoIdRef = useRef(selectedTopoId)
   useEffect(() => {
     selectedTopoIdRef.current = selectedTopoId
   }, [selectedTopoId])
-  const [isSimulatingCongestion, setIsSimulatingCongestion] = useState<boolean>(true)
-  const [isDetourActive, setIsDetourActive] = useState<boolean>(true)
+  const [isSimulatingCongestion, setIsSimulatingCongestion] = useState<boolean>(false)
+  const [fabricRunning, setFabricRunning] = useState<boolean>(false)
+  const [fabricBusy, setFabricBusy] = useState<boolean>(false)
+  const [fabricError, setFabricError] = useState<string | null>(null)
+  const [isDetourActive, setIsDetourActive] = useState<boolean>(false)
+  const [detourBusy, setDetourBusy] = useState<boolean>(false)
+  const [detourError, setDetourError] = useState<string | null>(null)
+  const [pathState, setPathState] = useState<'ok' | 'unknown' | 'unavailable'>('unknown')
   const [eventFilter, setEventFilter] = useState<string>('decisions')
   const [selectedChartLink, setSelectedChartLink] = useState<string>('s1--s2')
   const [spikeStartEpoch, setSpikeStartEpoch] = useState<number>(() => Math.floor(Date.now() / 1000) - 24)
@@ -183,7 +196,7 @@ export default function App() {
   // Addendum 1 & 2: Telemetry Data Mode (Simulated vs Live)
   const [telemetryMode, setTelemetryMode] = useState<'simulated' | 'live'>(() => {
     const saved = localStorage.getItem('sdn.ui.telemetryMode') as 'simulated' | 'live' | null
-    return saved || 'simulated'
+    return saved || 'live'
   })
   const [liveUtilisation, setLiveUtilisation] = useState<Record<string, LinkUtilisationRecord> | null>(null)
   const [hasLiveTelemetrySamples, setHasLiveTelemetrySamples] = useState<boolean>(false)
@@ -232,9 +245,27 @@ export default function App() {
 
   // Active path sequence
   const activePath = useMemo(() => {
-    if (isDetourActive) return currentDef.alternatePath
-    return currentDef.defaultPath
-  }, [isDetourActive, currentDef])
+    // In live mode, do not trust the toggle: derive the active path from the
+    // measured utilisation of the two candidate paths. If the alternate path
+    // actually carries the traffic, it is the active path; otherwise the
+    // primary (default) path is.
+    if (telemetryMode === 'live' && hasLiveTelemetrySamples && liveUtilisation) {
+      const pathLoad = (path: string[]) => {
+        let total = 0
+        for (let i = 0; i < path.length - 1; i++) {
+          const key = [path[i], path[i + 1]].sort().join('--')
+          total += liveUtilisation[key]?.used_mbps ?? 0
+        }
+        return total
+      }
+      const defLoad = pathLoad(currentDef.defaultPath)
+      const altLoad = pathLoad(currentDef.alternatePath)
+      if (Math.abs(altLoad - defLoad) > 0.1) {
+        return altLoad > defLoad ? currentDef.alternatePath : currentDef.defaultPath
+      }
+    }
+    return isDetourActive ? currentDef.alternatePath : currentDef.defaultPath
+  }, [telemetryMode, hasLiveTelemetrySamples, liveUtilisation, isDetourActive, currentDef])
 
   const activePathLinks = useMemo(() => {
     const set = new Set<string>()
@@ -527,7 +558,7 @@ export default function App() {
         t: spikeStartEpoch + 4,
         type: 'predict',
         label: 'Predicted',
-        detail: 'RandomForest p=0.91 >= 0.80',
+        detail: 'ML hazard forecast fired (10 s horizon)',
         color: '#fbbf24',
       },
       {
@@ -558,8 +589,8 @@ export default function App() {
         id: 'pred-1',
         kind: 'predict',
         summary: isSimulatingCongestion
-          ? `Predicted ${bottleneckDef} >= 80% congestion hazard (p=0.91)`
-          : `Link ${bottleneckDef} operating normal (<80% load, p=0.08)`,
+          ? `ML hazard forecast fires for ${bottleneckDef} (10 s horizon)`
+          : `Link ${bottleneckDef} below forecast threshold (10 s horizon)`,
         wall_iso: timeIso,
         isDerived: true,
       },
@@ -578,7 +609,7 @@ export default function App() {
         id: 'reroute-1',
         kind: 'reroute',
         summary: isDetourActive
-          ? `Proactive reroute installed: 2 flow-mods applied in 18ms`
+          ? `Alternate-path flow programming active (make-before-break)`
           : (isStatic
             ? `No flow-mods installed: static shortest path maintained`
             : `Normal baseline forwarding rules active`),
@@ -681,7 +712,7 @@ export default function App() {
           if (!frame.utilisation.topo_id || frame.utilisation.topo_id === selectedTopoIdRef.current) {
             setLiveUtilisation(frame.utilisation.links)
             const hasReal = Object.values(frame.utilisation.links).some(
-              (l) => l.source === 'live_portstats' && !l.is_stale,
+              (l) => (l.source === 'telemetry_csv' || l.source === 'live_portstats') && !l.is_stale,
             )
             setHasLiveTelemetrySamples(hasReal)
           }
@@ -696,6 +727,61 @@ export default function App() {
     return () => client.close()
   }, [authed, selectedTopoId])
 
+  // Poll /api/fabric/status so the console knows whether the real fabric is up
+  useEffect(() => {
+    if (!authed) return
+    let active = true
+    const checkFabric = async () => {
+      try {
+        const res = await api.fabricStatus()
+        if (active && res) setFabricRunning(!!res.fabric_running)
+      } catch {
+        /* ignore */
+      }
+    }
+    checkFabric()
+    const t = setInterval(checkFabric, 3000)
+    return () => {
+      active = false
+      clearInterval(t)
+    }
+  }, [authed, selectedTopoId])
+
+  // Poll /api/fabric/path — keep detour state synced to the controller's
+  // registered forward path (pin, fix, chat, or restart — all collapse here).
+  // The catalog path includes end-hosts; the controller's path is switches only.
+  const altPathKey = useMemo(
+    () => (currentDef?.alternatePath ?? []).filter((n) => !String(n).startsWith('h')).join('|'),
+    [currentDef?.alternatePath],
+  )
+  useEffect(() => {
+    if (!authed) return
+    let active = true
+    const poll = async () => {
+      try {
+        const res = await api.fabricPath()
+        if (!active) return
+        if (res?.status === 'ok') {
+          setPathState('ok')
+          const here = (res.path ?? []).join('|')
+          if (here.length > 0 && altPathKey) {
+            setIsDetourActive(here === altPathKey)
+          }
+        } else {
+          setPathState('unavailable')
+        }
+      } catch {
+        if (active) setPathState('unknown')
+      }
+    }
+    poll()
+    const t = setInterval(poll, 4000)
+    return () => {
+      active = false
+      clearInterval(t)
+    }
+  }, [authed, altPathKey])
+
   // Periodic poll of /api/telemetry/utilisation
   useEffect(() => {
     if (!authed) return
@@ -706,7 +792,7 @@ export default function App() {
         if (active && res?.links) {
           setLiveUtilisation(res.links)
           const hasReal = Object.values(res.links).some(
-            (l) => l.source === 'live_portstats' && !l.is_stale,
+            (l) => (l.source === 'telemetry_csv' || l.source === 'live_portstats') && !l.is_stale,
           )
           setHasLiveTelemetrySamples(hasReal)
         }
@@ -728,7 +814,7 @@ export default function App() {
     let active = true
     const checkPreds = async () => {
       try {
-        const res = await api.predictions()
+        const res = await api.predictions(selectedTopoId)
         if (active && res) {
           setPrediction(res)
         }
@@ -750,27 +836,66 @@ export default function App() {
     if (telemetryMode === 'live') {
       api.setControllerMode(newMode).catch((e) => console.warn('Could not set controller mode:', e))
     }
-    if (newMode === 'static_shortest') {
-      setIsDetourActive(false)
-    } else if (newMode === 'ml_aware' || newMode === 'reactive_threshold') {
-      setIsDetourActive(isSimulatingCongestion)
-    } else if (newMode === 'ecmp') {
+    // Detour state is maintained from the controller's registered path poll;
+    // the mode switch only changes forwarding, not the pin. Keep defaults in
+    // sync but let the poll converge the UI to reality.
+    if (newMode === 'ecmp') {
       setIsDetourActive(false)
     }
   }, [telemetryMode, isSimulatingCongestion])
 
   // Direct manual detour toggle override
-  const handleToggleDetour = useCallback(() => {
-    setIsDetourActive((prev) => {
-      const next = !prev
-      if (next && routingMode === 'static_shortest') {
-        setRoutingMode('ml_aware')
-      } else if (!next && routingMode === 'ml_aware' && isSimulatingCongestion) {
-        setRoutingMode('static_shortest')
+  // Ask the agent to run the real closed-loop fix; reflect the measured result.
+  const handleToggleDetour = useCallback(async () => {
+    if (detourBusy) return
+
+    if (isDetourActive) {
+      // OFF = release the pin; the controller decides freely from telemetry.
+      try { await api.unpinLink() } catch (e) { console.error('unpin failed:', e) }
+      setIsDetourActive(false)
+      return
+    }
+
+    setDetourBusy(true)
+    setDetourError(null)
+    try {
+      const res = await api.agentRun(selectedTopoId)
+      const passed = Boolean((res?.verification as Record<string, any> | undefined)?.passed)
+      if (res?.status === 'completed' && passed) {
+        setIsDetourActive(true)
+      } else {
+        setIsDetourActive(false)
+        const last = res?.messages?.[res.messages.length - 1]?.content
+        setDetourError(last ?? res?.error ?? 'agent could not divert the flow — see the Agent panel')
       }
-      return next
-    })
-  }, [routingMode, isSimulatingCongestion])
+    } catch (e) {
+      setIsDetourActive(false)
+      setDetourError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDetourBusy(false)
+    }
+  }, [detourBusy, isDetourActive, selectedTopoId])
+
+  // Start/stop the real Mininet fabric from the console
+  const handleToggleFabric = useCallback(async () => {
+    setFabricBusy(true)
+    setFabricError(null)
+    try {
+      if (fabricRunning) {
+        await api.stopFabric()
+        setIsSimulatingCongestion(false)
+        setIsDetourActive(false)
+      } else {
+        await api.startFabric(routingMode)
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('Failed to toggle fabric:', e)
+      setFabricError(msg)
+    } finally {
+      setFabricBusy(false)
+    }
+  }, [fabricRunning, routingMode])
 
   // Real Spike Integration (Addendum 5)
   const handleToggleSpike = useCallback(async () => {
@@ -1094,6 +1219,28 @@ export default function App() {
             </span>
           </div>
 
+          <button
+            onClick={handleToggleFabric}
+            disabled={fabricBusy}
+            className="btn btn--quiet btn--xs"
+            title={
+              fabricRunning
+                ? 'Tear down the Mininet fabric (switches, links, Ryu controller)'
+                : 'Start the real Mininet diamond fabric with the selected ML mode'
+            }
+          >
+            {fabricBusy ? '…' : fabricRunning ? 'Stop Fabric' : 'Start Fabric'}
+          </button>
+          {fabricError && (
+            <span
+              className="agent-save-msg text-red"
+              title={fabricError}
+              style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              fabric: {fabricError}
+            </span>
+          )}
+
           <div
             className={`status-indicator status-indicator--${status?.controller?.listening ?? true ? 'live' : 'down'}`}
             title={`OpenFlow 1.3 Controller: ${
@@ -1107,13 +1254,23 @@ export default function App() {
           {status?.predictions_available && (
             <span
               className="predictions-badge"
-              title={
-                prediction?.links?.length
-                  ? `ML Horizon: 10s · ${prediction.links.filter((l) => l.congested).length} congested`
-                  : 'ML Forecast Active'
-              }
+              title={(() => {
+                const links = prediction?.links ?? []
+                const scored = links.filter((l) => l.probability != null).length
+                const congested = links.filter((l) => l.congested).length
+                if (scored === 0) {
+                  return 'ML forecast pending — the model needs ~12 samples (~24 s) of live telemetry before it can score links'
+                }
+                return `ML Horizon: 10s · ${congested} of ${scored} scored links predicted congested`
+              })()}
             >
-              Pred {prediction?.links?.some((l) => l.congested) ? '⚠️' : '✓'}
+              Pred{' '}
+              {(() => {
+                const links = prediction?.links ?? []
+                const scored = links.filter((l) => l.probability != null).length
+                if (scored === 0) return '—'
+                return links.some((l) => l.congested) ? '⚠️' : '✓'
+              })()}
             </span>
           )}
 
@@ -1272,6 +1429,9 @@ export default function App() {
           onStopCongestion={handleStopSpike}
           isDetourActive={isDetourActive}
           onToggleDetour={handleToggleDetour}
+          detourBusy={detourBusy}
+          detourError={detourError}
+          pathState={pathState}
           selectedTopoId={selectedTopoId}
           onSelectTopoId={handleSelectTopology}
           bottleneckLoadText={bottleneckLoadText}
@@ -1387,7 +1547,7 @@ export default function App() {
                           telemetryMode === 'simulated'
                             ? 'source = simulated · Synthetic dynamic flow conservation load'
                             : !hasLiveTelemetrySamples
-                            ? 'source = live_portstats (No live samples received from P5 yet)'
+                            ? 'source = telemetry_csv — no live samples yet'
                             : sourceTooltip('measured')
                         }
                       >
@@ -1455,7 +1615,7 @@ export default function App() {
                       allLinksSummary={allLinksRanked}
                       selectedLink={selectedChartLink}
                       onSelectLink={setSelectedChartLink}
-                      events={timelineEvents}
+                      events={telemetryMode === 'simulated' ? timelineEvents : []}
                       isSpikeActive={isSimulatingCongestion}
                       spikeRateMbps={14.0}
                       isLinksOpen={secLinksOpen}
@@ -1655,14 +1815,9 @@ export default function App() {
           setSpikeStartEpoch(Math.floor(Date.now() / 1000))
         }}
         onApplyDetour={() => {
+          // The toggle state is driven by /api/fabric/path polling; nothing
+          // fake to apply here — the poll confirms when the real detour is live.
           setIsDetourActive(true)
-          setRoutingMode('ml_aware')
-          setVerifyState((prev) => ({
-            ...prev,
-            status: 'PASS',
-            passed: true,
-            message: `Agent proactive detour verified on ${selectedTopoId}`,
-          }))
         }}
       />
     </div>

@@ -70,11 +70,53 @@ class LiveFabricManager:
                 cls._instance = LiveFabricManager()
             return cls._instance
 
+    # ------------------------------------------------------------- detection --
+    @staticmethod
+    def _controller_pids() -> List[int]:
+        """PIDs of ryu-manager processes running our controller app.
+
+        A fabric survives an API restart (ryu is spawned with ``setsid``), so a
+        freshly started API process must be able to discover a fabric it did
+        not spawn itself — otherwise ``is_running`` lies after any restart.
+        """
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", "ryu-manager.*sdn_controller"],
+                capture_output=True, timeout=2, check=False).stdout.decode().split()
+            return [int(p) for p in out if p.strip().isdigit()]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _host_pid(name: str) -> Optional[int]:
+        """PID of a Mininet host namespace process (e.g. ``h1``).
+
+        Mininet names the host shells ``mininet:h1`` (no space), so match that
+        exact token rather than the friendlier ``mininet: h1`` which never
+        matches.
+        """
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", rf"mininet:{name}$"],
+                capture_output=True, timeout=2, check=False).stdout.decode().split()
+            for token in out:
+                if token.strip().isdigit():
+                    return int(token)
+            return None
+        except Exception:
+            return None
+
+    def running(self) -> bool:
+        """True if a live fabric exists — ours, or a detached one from before an API restart."""
+        if self.is_running and self.net is not None:
+            return True
+        return bool(self._controller_pids())
+
     # ------------------------------------------------------------- lifecycle --
     def start_fabric(self, mode: str = "ml_aware") -> Dict[str, Any]:
         """Start the Ryu controller and Mininet fabric if not already running."""
         with self._start_lock:
-            if self.is_running and self.net is not None:
+            if self.running():
                 return {
                     "status": "running",
                     "mode": self.current_mode,
@@ -84,7 +126,17 @@ class LiveFabricManager:
             LOGGER.info("Starting live Ryu controller and Mininet fabric...")
             self.current_mode = mode
 
-            # 1. Start Ryu controller
+            # 1. Clean slate FIRST. `mn -c` runs `killall ryu-manager`, so
+            #    calling mn_clean() any time after the controller spawn kills
+            #    the very Ryu we just started -- which is exactly what left every
+            #    UI-started fabric with a dead controller, 100% ping loss and
+            #    zero telemetry while reporting "status: running".
+            try:
+                mn_clean()
+            except Exception:
+                pass
+
+            # 2. Start Ryu controller
             from ml.collect_dataset import wait_for_port
 
             env = os.environ.copy()
@@ -118,13 +170,8 @@ class LiveFabricManager:
 
                 LOGGER.info("Ryu controller listening on 127.0.0.1:6653")
 
-                # 2. Build Mininet Fabric
+                # 3. Build Mininet Fabric
                 from topology.multipath_topology import MultipathTopology, build_spec
-
-                try:
-                    mn_clean()
-                except Exception:
-                    pass
 
                 spec = build_spec(self.config)
                 self.topo = MultipathTopology(
@@ -196,6 +243,22 @@ class LiveFabricManager:
                     except Exception:
                         pass
                 self.ryu_proc = None
+            else:
+                # No handle from this API process (fabric started before an
+                # API restart) — kill the detached controller(s) by detection.
+                for pid in self._controller_pids():
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        continue
+                deadline = time.time() + 3.0
+                while time.time() < deadline and self._controller_pids():
+                    time.sleep(0.2)
+                for pid in self._controller_pids():
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        continue
 
             try:
                 mn_clean()
@@ -209,11 +272,19 @@ class LiveFabricManager:
     def start_spike(self, rate_mbps: float = 14.0, duration_s: float = 45.0) -> Dict[str, Any]:
         """Inject real 14 Mbps UDP traffic from h1 to h4 using iperf3."""
         with self._spike_lock:
-            if not self.is_running or self.net is None:
+            if self.net is not None and self.is_running:
+                pass  # managed path — Mininet object available
+            elif self.running():
+                # Detached fabric from before an API restart: no Mininet object,
+                # but hosts exist as steady namespaces; drive them via mnexec.
+                return self._start_spike_detached(rate_mbps=rate_mbps, duration_s=duration_s)
+            else:
                 # Auto-start fabric if stopped
                 res = self.start_fabric(mode=self.current_mode)
                 if res.get("status") == "error":
                     return res
+                if self.net is None:
+                    return {"status": "error", "error": "fabric started but hosts unavailable"}
 
             h1 = self.net.get("h1")
             h4 = self.net.get("h4")
@@ -255,6 +326,59 @@ class LiveFabricManager:
                 "dst": "h4 (10.0.0.4)",
             }
 
+    def _start_spike_detached(self, rate_mbps: float, duration_s: float) -> Dict[str, Any]:
+        """Start the spike on a fabric this API process did not spawn.
+
+        Finds the Mininet host namespaces by process name and drives them with
+        ``mnexec`` — the same mechanism Mininet itself uses. Returns an explicit
+        failure (never a fabricated success) if the namespaces are gone.
+        """
+        h1_pid = self._host_pid("h1")
+        h4_pid = self._host_pid("h4")
+        if not h1_pid or not h4_pid:
+            return {"status": "error",
+                    "error": "host namespaces not found (fabric down or unrecognised)"}
+
+        iperf = venv_bin("iperf3")
+        mnexec = venv_bin("mnexec")
+
+        # (Re)start the iperf3 server on h4
+        subprocess.run([mnexec, "-d", "-a", str(h4_pid), iperf, "-s", "-D", "-p", "5201"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=5, check=False)
+        time.sleep(0.3)
+
+        # Kill any detached client first
+        subprocess.run(["pkill", "-9", "-f", "iperf3 -u"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=3, check=False)
+        time.sleep(0.2)
+
+        cmd = [
+            mnexec, "-d", "-a", str(h1_pid),
+            iperf, "-u", "-c", "10.0.0.4", "-b", f"{rate_mbps}M",
+            "-t", str(int(duration_s)), "-p", "5201",
+        ]
+        self.spike_proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        self.spike_active = True
+        self.spike_start_time = time.time()
+        self.spike_duration_s = duration_s
+        self.spike_rate_mbps = rate_mbps
+        self.net = None  # explicitly detached
+        LOGGER.info("Detached-fabric spike started: %s Mbps h1->h4 for %ss (h1 pid=%s)",
+                    rate_mbps, duration_s, h1_pid)
+        return {
+            "status": "spike_started",
+            "rate_mbps": rate_mbps,
+            "duration_s": duration_s,
+            "src": "h1 (10.0.0.1)",
+            "dst": "h4 (10.0.0.4)",
+            "detached": True,
+        }
+
     def _stop_spike_unlocked(self) -> None:
         """Internal helper to kill active spike processes without acquiring lock."""
         if self.spike_proc is not None:
@@ -267,6 +391,12 @@ class LiveFabricManager:
                 except Exception:
                     pass
             self.spike_proc = None
+
+        # Kill any detached client/server too (namespace membership doesn't
+        # hide processes from the host's process table).
+        subprocess.run(["pkill", "-9", "-f", "iperf3 -u"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=3, check=False)
 
         if self.net is not None:
             try:
@@ -292,7 +422,7 @@ class LiveFabricManager:
 
         self.current_mode = mode
         # If fabric is running, restart controller in new mode to apply changes cleanly
-        if self.is_running:
+        if self.running():
             LOGGER.info("Switching live controller mode to %s...", mode)
             # Restart controller with new mode env var
             if self.ryu_proc is not None:
@@ -301,6 +431,17 @@ class LiveFabricManager:
                     self.ryu_proc.wait(timeout=2.0)
                 except Exception:
                     pass
+                self.ryu_proc = None
+            else:
+                # Detached fabric from before an API restart: kill by detection
+                for pid in self._controller_pids():
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        continue
+                deadline = time.time() + 3.0
+                while time.time() < deadline and self._controller_pids():
+                    time.sleep(0.2)
 
             env = os.environ.copy()
             env["PYTHONPATH"] = str(ROOT)
@@ -326,20 +467,38 @@ class LiveFabricManager:
             )
             log_handle.__exit__()
 
+            # Confirm the replacement actually bound — otherwise the UI would
+            # claim a mode that isn't live.
+            from ml.collect_dataset import wait_for_port
+            if not wait_for_port(6653, timeout_s=10.0):
+                return {"status": "error",
+                        "error": "controller failed to bind 6653 after mode switch"}
+
         return {"status": "mode_updated", "mode": self.current_mode}
 
     # ------------------------------------------------------------- status --
     def get_status(self) -> Dict[str, Any]:
-        """Return the current live fabric state."""
-        # Check if spike is still running
+        """Return the current live fabric state.
+
+        After an API restart the flag is gone, but the fabric itself survives —
+        so the status is derived from what's actually running (controller
+        process + OpenFlow listener), not from this process's memory.
+        """
         if self.spike_active and self.spike_proc is not None:
             if self.spike_proc.poll() is not None:
                 self.spike_active = False
+        elif self.spike_active:
+            # Detached spike: check the detached client process
+            out = subprocess.run(["pgrep", "-f", "iperf3 -u -c 10.0.0.4"],
+                                 capture_output=True, timeout=2, check=False).stdout
+            if not out.strip():
+                self.spike_active = False
 
         elapsed = time.time() - self.spike_start_time if self.spike_active else 0.0
+        running = self.running()
 
         return {
-            "fabric_running": self.is_running,
+            "fabric_running": running,
             "routing_mode": self.current_mode,
             "spike_active": self.spike_active,
             "spike_rate_mbps": self.spike_rate_mbps if self.spike_active else 0.0,

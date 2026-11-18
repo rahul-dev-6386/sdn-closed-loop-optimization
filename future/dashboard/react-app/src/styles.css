@@ -520,6 +520,8 @@ button { font: inherit; color: inherit; }
   padding: 3px 5px;
 }
 .topo-btn:hover { background: var(--surface-raised); color: var(--ink); }
+.topo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.topo-btn:disabled:hover { background: inherit; color: inherit; }
 .topo-btn--action { font-weight: 500; }
 .topo-btn--danger {
   background: rgba(239, 68, 68, 0.15);
@@ -4071,6 +4073,12 @@ button { font: inherit; color: inherit; }
   background: rgba(14, 165, 233, 0.15);
   color: #38bdf8;
   border: 1px solid rgba(14, 165, 233, 0.35);
+}
+
+.agent-badge--groq {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
 }
 
 .agent-badge--hazard {

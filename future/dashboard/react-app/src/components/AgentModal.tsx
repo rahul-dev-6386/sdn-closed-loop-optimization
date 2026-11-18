@@ -114,7 +114,7 @@ export function AgentModal({
         setMessages([
           {
             role: 'assistant',
-            content: `**SDN Agent Ready**\nI monitor telemetry, evaluate machine learning congestion forecasts, and execute OpenFlow 1.3 rerouting via **LangGraph**.\n\nYou can click **Create Congestion** to inject test traffic, or ask me to resolve congestion and route around bottlenecks.`,
+            content: `**SDN Agent Ready**\nI monitor live port-stats, read ML congestion forecasts, and — when the network is actually congested — pin the bottleneck link so the **controller** reroutes onto the alternate path, then verify.\n\nAsk me to **create congestion** to inject an 8\u201114 Mbps spike on the live fabric, or type **fix congestion** for the full closed loop.`,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ])
@@ -160,7 +160,12 @@ export function AgentModal({
       if (res.messages && res.messages.length > 0) {
         setMessages(res.messages)
       }
-      if (isFixCmd && (res.status === 'completed' || res.verification?.passed)) {
+      if (
+        isFixCmd &&
+        res.status === 'completed' &&
+        res.action_taken &&
+        !String(res.action_taken).startsWith('no action')
+      ) {
         onApplyDetour?.()
       }
     } catch (err: any) {
@@ -228,7 +233,11 @@ export function AgentModal({
       const res = await api.agentRun(selectedTopoId)
       setAgentState(res)
       if (res.messages) setMessages(res.messages)
-      if (res.status === 'completed' || res.verification?.passed) {
+      if (
+        res.status === 'completed' &&
+        res.action_taken &&
+        !String(res.action_taken).startsWith('no action')
+      ) {
         onApplyDetour?.()
       }
     } catch (err: any) {
@@ -280,16 +289,21 @@ export function AgentModal({
               <div className="agent-modal__title-wrap">
                 <h3 className="agent-modal__title">Autonomous Congestion Controller</h3>
                 <span className="agent-badge agent-badge--langgraph">LangGraph StateGraph</span>
-                <span className="agent-badge agent-badge--model" title="OpenRouter Active Model">
+                <span className="agent-badge agent-badge--model" title="Selected model — OpenRouter first, Groq fallback when rate-limited, deterministic reporter as final fallback">
                   {config?.model ? config.model.split('/')[1] || config.model : 'OpenRouter Free Model'}
                 </span>
+                {config?.has_groq_api_key && (
+                  <span className="agent-badge agent-badge--groq" title="Groq free tier is configured and answers when OpenRouter is rate-limited">
+                    GROQ FALLBACK ✓
+                  </span>
+                )}
                 {isCongested ? (
-                  <span className="agent-badge agent-badge--hazard" title="Bottleneck link experiencing traffic surge">
-                    CONGESTED (88%)
+                  <span className="agent-badge agent-badge--hazard" title="Measured link utilisation at or above the 80% threshold">
+                    CONGESTED
                   </span>
                 ) : (
-                  <span className="agent-badge agent-badge--ok" title="All link utilisations below threshold">
-                    HEALTHY (&lt;80%)
+                  <span className="agent-badge agent-badge--ok" title="All sampled links below the 80% utilisation threshold">
+                    HEALTHY
                   </span>
                 )}
                 {isDetourActive && (
@@ -337,6 +351,11 @@ export function AgentModal({
                     onChange={(e) => setApiKeyInput(e.target.value)}
                   />
                 </div>
+                <p className="agent-hint-line" style={{ marginTop: 4, fontSize: 11, opacity: 0.75 }}>
+                  {config?.has_groq_api_key
+                    ? `Groq fallback: configured (${config.groq_masked_key ?? 'set'}) — used automatically if OpenRouter fails`
+                    : 'Groq fallback: GROQ_API_KEY not set in .env — OpenRouter remains the only LLM path'}
+                </p>
               </div>
 
               <div className="agent-field">
@@ -349,11 +368,32 @@ export function AgentModal({
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
                 >
-                  {config?.available_models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
+                  {(() => {
+                    const groups = new Map<string, typeof config.available_models>()
+                    for (const m of config?.available_models ?? []) {
+                      const key = m.provider ?? 'other'
+                      const arr = groups.get(key) ?? []
+                      arr.push(m)
+                      groups.set(key, arr)
+                    }
+                    const order = ['openrouter', 'groq']
+                    const labels: Record<string, string> = {
+                      openrouter: 'OpenRouter — Free Models',
+                      groq: 'Groq — Free Models',
+                      other: 'Other Models',
+                    }
+                    return [...groups.entries()]
+                      .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
+                      .map(([provider, models]) => (
+                        <optgroup key={provider} label={labels[provider] ?? provider}>
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))
+                  })()}
                 </select>
               </div>
 

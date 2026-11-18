@@ -1,11 +1,14 @@
-"""OpenRouter LLM Integration for LangGraph Congestion Control Agent.
+"""LLM integration for the LangGraph Congestion Control Agent.
 
-Supports OpenRouter free models (Gemma 2, Llama 3.1, Mistral 7B) with
-automatic fallback to deterministic SDN expert reasoning.
+Two providers, both OpenAI-compatible: OpenRouter (``OPENROUTER_API_KEY``)
+and Groq (``GROQ_API_KEY``), each with a free model tier. The chain tries the
+user-selected model first, then walks the quality-ordered cross-provider
+``FALLBACK_PRIORITY``, and finally degrades to a deterministic factual
+reporter. No numbers are ever invented at any stage.
 """
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import httpx
 from future.agent.config import agent_config
 
@@ -20,100 +23,123 @@ When responding to an incident:
 3. Formulate a mitigation plan: choose between 'ml_aware' Make-Before-Break detour, static shortest path, or rate shaping.
 4. Execute and explain the flow-mod changes and state the post-reroute verification criteria.
 
-Keep your explanations clear, quantitative, and professional. State explicit bandwidth numbers (Mbps) and percentages.
+Keep your explanations clear and professional. Use only the numeric values provided in the telemetry context — never invent bandwidth numbers, percentages, or probabilities.
 """
 
 
 class AgentLLM:
-    """Handles communication with OpenRouter LLMs with graceful offline fallback."""
+    """OpenRouter + Groq chat access with a deterministic factual fallback."""
 
     def __init__(self):
         self.config = agent_config
 
     async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Call OpenRouter if API key is configured; otherwise use expert deterministic logic."""
-        if self.config.api_key:
-            try:
-                headers = {
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "http://localhost:5173",
-                    "X-Title": "SDN Agentic Congestion Controller",
-                }
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                ]
-                if context:
-                    messages.append({
-                        "role": "system",
-                        "content": f"Current Network Telemetry Context:\n{json.dumps(context, indent=2)}",
-                    })
-                messages.append({"role": "user", "content": prompt})
+        """Try the configured model, then walk the cross-provider free chain.
 
-                payload = {
-                    "model": self.config.model,
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": 800,
-                }
+        Order: the user-selected model (its provider's endpoint), then the
+        quality-ordered ``FALLBACK_PRIORITY`` across OpenRouter and Groq
+        (providers without a key are skipped), then the deterministic factual
+        reporter. Each attempt is independent; one provider being down never
+        blocks the other.
+        """
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if context:
+            messages.append({
+                "role": "system",
+                "content": f"Current Network Telemetry Context:\n{json.dumps(context, indent=2)}",
+            })
+        messages.append({"role": "user", "content": prompt})
 
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(
-                        f"{self.config.base_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if choices:
-                            content = choices[0].get("message", {}).get("content", "").strip()
-                            if len(content) > 10:
-                                return content
-                            LOGGER.warning("OpenRouter returned truncated response (%d chars): %s", len(content), content)
-                    else:
-                        LOGGER.warning("OpenRouter error %d: %s", resp.status_code, resp.text)
-            except Exception as exc:
-                LOGGER.error("OpenRouter request exception: %s", exc)
+        for model in self.config.fallback_order():
+            base_url, key = self.config.endpoint_of(model)
+            if not key:
+                LOGGER.info("Skipping %s: no API key for its provider", model)
+                continue
+            content = await self._complete(base_url, key, model, messages)
+            if content:
+                return content
 
-        # Fallback to domain-specific deterministic reasoning engine
+        # Final fallback: domain-specific deterministic reasoning engine.
         return self._deterministic_reasoning(prompt, context)
 
+    async def _complete(self, base_url: str, api_key: str, model: str,
+                        messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Single chat-completion attempt. Returns content or ``None``."""
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:5173",
+            "X-Title": "SDN Agentic Congestion Controller",
+        }
+        provider = self.config.provider_of(model)
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": 800,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(f"{base_url}/chat/completions",
+                                         headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        content = choices[0].get("message", {}).get("content", "").strip()
+                        if len(content) > 10:
+                            return content
+                        LOGGER.warning("%s returned truncated response (%d chars)", model, len(content))
+                        return None
+                LOGGER.warning("%s (%s) error %d: %s", model, provider, resp.status_code, resp.text[:200])
+                return None
+        except Exception as exc:
+            LOGGER.warning("%s (%s) request exception: %s", model, provider, exc)
+            return None
+
     def _deterministic_reasoning(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """High-precision domain expert fallback that reasons about SDN congestion."""
+        """Factual reporter used when no LLM is reachable or configured.
+
+        Prints only what was measured in ``context``; never invents numbers.
+        """
         ctx = context or {}
-        bottleneck = ctx.get("bottleneck", "s1--s2")
-        util = ctx.get("bottleneck_util_pct", 88.0)
-        prob = ctx.get("ml_probability", 0.91)
         topo = ctx.get("topology_id", "diamond")
-        path = ctx.get("detour_path", "h1 → s1 → s3 → s4 → h2" if topo == "diamond" else "h_west → SFO → LAX → DFW → ATL → WDC → NYC → h_east")
+        bottleneck = ctx.get("bottleneck", "unknown")
+        util = ctx.get("bottleneck_util_pct")
+        prob = ctx.get("ml_probability")
+        congested = bool(ctx.get("congested"))
+        status = ctx.get("telemetry_status", "ok")
+        reason = ctx.get("telemetry_reason")
 
-        lower = prompt.lower()
-
-        if "status" in lower or "check" in lower or "telemetry" in lower:
+        if status == "unavailable":
             return (
-                f"**Network Telemetry Audit:**\n"
-                f"- **Monitored Bottleneck:** `{bottleneck}` ({util}% load)\n"
-                f"- **Operating Status:** {'Hazard state (> 80% threshold)' if util >= 80 else 'Normal operating band'}\n"
-                f"- **ML Forecast:** Incipient hazard probability p = {prob:.2f} (10s forward horizon)\n"
-                f"- **Recommendation:** Deploy Make-Before-Break proactive detour via `{path}` to divert traffic before queue exhaustion."
+                f"**Telemetry unavailable** on topology `{topo}`: {reason}. "
+                f"No congestion assessment can be made. Start the fabric and ask again; "
+                f"I will not report numbers I did not measure."
             )
 
-        if "fix" in lower or "mitigate" in lower or "detour" in lower or "resolve" in lower or "reroute" in lower:
-            return (
-                f"**Autonomous Congestion Mitigation Initiated:**\n"
-                f"1. **Detection:** Bottleneck link `{bottleneck}` observed at {util}% load with hazard p = {prob:.2f}.\n"
-                f"2. **Algorithm:** Closed-Loop Multi-Metric Dijkstra calculated optimal alternate path `{path}`.\n"
-                f"3. **Execution:** Dispatched 2 OpenFlow 1.3 Flow-Mod instructions to ingress and convergence switches (18ms dispatch).\n"
-                f"4. **Telemetry Verification:** Monitored port counters post-reroute. Load on `{bottleneck}` dropped from {util}% → 1% (relieved).\n"
-                f"5. **Verdict:** Post-reroute closed-loop verification confirmed: **PASS**."
-            )
+        util_txt = f"{util}%" if util is not None else "n/a (not scored)"
+        prob_txt = f"p = {prob}" if prob is not None else "n/a (model not scored yet)"
+        links = ctx.get("links", {}) or {}
+        link_lines = []
+        for key, info in sorted(links.items()):
+            try:
+                link_lines.append(
+                    f"  - `{key}`: {info.get('used_mbps', 0.0):.3f} Mbps "
+                    f"({info.get('util_pct', 0)}% of {info.get('capacity_mbps', 10.0)} Mbps)"
+                )
+            except Exception:
+                continue
+        links_block = ("\n" + "\n".join(link_lines) + "\n") if link_lines else ""
 
         return (
-            f"**SDN Agent Analysis:**\n"
-            f"Observed network state for topology `{topo}`: Bottleneck `{bottleneck}` at {util}% capacity. "
-            f"The Random Forest model forecasts congestion with p = {prob:.2f}. "
-            f"You can instruct me to 'fix congestion', 'inspect telemetry', or 'run auto-mitigation loop' to install detour forwarding rules."
+            f"**Network telemetry — `{topo}`**\n"
+            f"- Bottleneck (measured worst): `{bottleneck}` at {util_txt}"
+            f"{' (CONGESTED)' if congested else ''}\n"
+            f"- ML forecast: {prob_txt} (10 s horizon)\n"
+            f"- Per-link utilisation (port-stats):{links_block}"
+            f"Ask me to 'fix congestion' to switch the controller to ML-aware routing, "
+            f"or 'run closed-loop' for the full measure→decide→reroute→verify cycle."
         )
 
 
